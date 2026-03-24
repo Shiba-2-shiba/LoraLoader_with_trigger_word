@@ -156,19 +156,6 @@ https://civitai.com/api/v1/model-versions/by-hash/<sha256>
 - 埋め込み metadata に使える候補が無い
 - Civitai fallback が無効、または有効でも解決できない
 
-## V3 / Nodes 2.0 / JS 互換性
-
-このパッケージは V3 ノードとして実装されています。
-
-- `comfy_entrypoint()` で登録
-- `define_schema()` / `execute()` を使用
-- `display_name`, `description`, `category`, `inputs`, `outputs`, `search_aliases` を schema に定義
-- Nodes 2.0 が必要とする `/object_info` 変換に必要な情報を backend schema 側で満たす構成
-- フロントエンド拡張は `web/` 配下の `app.registerExtension()` と `beforeRegisterNodeDef` を使用
-- `LGraphCanvas` や prototype patch は使わず、ノード単位の UI 拡張に限定
-
-JavaScript 拡張は含みますが、`app.registerExtension()` と `beforeRegisterNodeDef` を使う最小構成です。  
-`LGraphCanvas` 置き換えやグローバル DOM パッチは使っていません。
 
 ## 既知の制限
 
@@ -177,9 +164,7 @@ JavaScript 拡張は含みますが、`app.registerExtension()` と `beforeRegis
 - `PickleTensor` など `safetensors` 以外の埋め込み metadata は扱いません
 - `modelspec.description` は説明文全体を返す可能性があるため、LoRA によっては長文になります
 
-## 公開メモ
 
-GitHub で単独公開する場合は、以下を同梱することを推奨します。
 
 - `README.md`
 - `pyproject.toml`
