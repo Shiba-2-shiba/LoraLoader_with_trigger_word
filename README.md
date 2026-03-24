@@ -163,7 +163,7 @@ https://civitai.com/api/v1/model-versions/by-hash/<sha256>
 - Civitai に登録されていない LoRA は by-hash fallback が使えません
 - `json_sample_prompt` は `images[].meta` が存在するモデルでのみ有効です
 - `PickleTensor` など `safetensors` 以外の埋め込み metadata は扱いません
-- `modelspec.description` は説明文全体を返す可能性があるため、LoRA によっては長文になります
+- `modelspec.description` は短い trigger 候補だけを抽出対象にしており、説明文全体はそのまま返しません
 
 
 
