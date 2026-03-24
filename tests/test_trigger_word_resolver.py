@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "trigger_word_resolver.py"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 spec = importlib.util.spec_from_file_location("trigger_word_resolver", MODULE_PATH)
 trigger_word_resolver = importlib.util.module_from_spec(spec)
@@ -118,6 +120,73 @@ class TriggerWordResolverTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "hero tag")
+
+    def test_resolve_output_path_returns_empty_string_for_failure_message(self):
+        with patch.object(
+            self.resolver,
+            "resolve_path",
+            return_value="[LoRA Trigger Words] hero_tag.safetensors: not found",
+        ):
+            result = self.resolver.resolve_output_path(
+                lora_path=r"C:\tmp\hero_tag.safetensors",
+                trigger_word_source="metadata",
+                enable_civitai_fallback=False,
+            )
+
+        self.assertEqual(result, "")
+
+    def test_model_card_prefers_local_metadata(self):
+        with patch.object(
+            self.resolver,
+            "_load_json_metadata",
+            return_value={
+                "civitai": {
+                    "id": 456,
+                    "modelId": 123,
+                    "name": "v1.0",
+                    "model": {"name": "Hero LoRA"},
+                }
+            },
+        ):
+            result = self.resolver.resolve_model_card_path(
+                lora_path=r"C:\tmp\hero_tag.safetensors",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            result["civitai_url"],
+            "https://civitai.com/models/123?modelVersionId=456",
+        )
+        self.assertEqual(result["source_label"], "local metadata")
+
+    def test_model_card_falls_back_to_civitai_hash_when_local_metadata_has_no_ids(self):
+        with (
+            patch.object(self.resolver, "_load_json_metadata", return_value={"civitai": {}}),
+            patch.object(
+                self.resolver,
+                "_load_civitai_metadata_by_hash",
+                return_value={
+                    "civitai": {
+                        "id": 789,
+                        "modelId": 321,
+                        "name": "v2",
+                        "model": {"name": "Fallback Hero"},
+                    }
+                },
+            ),
+        ):
+            result = self.resolver.resolve_model_card_path(
+                lora_path=r"C:\tmp\hero_tag.safetensors",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            result["civitai_url"],
+            "https://civitai.com/models/321?modelVersionId=789",
+        )
+        self.assertEqual(result["source_label"], "Civitai by-hash fallback/cache")
 
 
 if __name__ == "__main__":

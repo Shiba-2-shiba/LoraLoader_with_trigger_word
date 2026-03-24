@@ -1,12 +1,17 @@
-"""Preview API for trigger word lookup in the frontend extension."""
-
-from pathlib import PurePosixPath
+"""Preview and browse APIs for the frontend extension."""
 
 import server
 from aiohttp import web
 
-from .constants import PREVIEW_PREFIX, PREVIEW_ROUTE
+from .constants import BROWSE_ROUTE, PREVIEW_PREFIX, PREVIEW_ROUTE
 from .services import trigger_word_resolver
+
+
+def _coerce_downstream_trigger_words(text):
+    cleaned = str(text or "").strip()
+    if cleaned.startswith(PREVIEW_PREFIX):
+        return ""
+    return cleaned
 
 
 @server.PromptServer.instance.routes.post(PREVIEW_ROUTE)
@@ -16,7 +21,6 @@ async def preview_trigger_words(request):
         lora_name = payload.get("lora_name", "")
         trigger_word_source = payload.get("trigger_word_source", "json_combined")
         enable_civitai_fallback = bool(payload.get("enable_civitai_fallback", False))
-        strength_model = _coerce_strength_model(payload.get("strength_model", 1.0))
 
         if not lora_name:
             return web.json_response(
@@ -32,16 +36,12 @@ async def preview_trigger_words(request):
             trigger_word_source=trigger_word_source,
             enable_civitai_fallback=enable_civitai_fallback,
         )
-        trigger_words = _format_preview_text(
-            lora_name=lora_name,
-            strength_model=strength_model,
-            trigger_words=raw_trigger_words,
-        )
         return web.json_response(
             {
-                "success": True,
-                "trigger_words": trigger_words,
+                "success": not str(raw_trigger_words).startswith(PREVIEW_PREFIX),
+                "trigger_words": raw_trigger_words,
                 "raw_trigger_words": raw_trigger_words,
+                "downstream_trigger_words": _coerce_downstream_trigger_words(raw_trigger_words),
             }
         )
     except Exception as exc:
@@ -56,26 +56,34 @@ async def preview_trigger_words(request):
         )
 
 
-def _coerce_strength_model(value):
+@server.PromptServer.instance.routes.post(BROWSE_ROUTE)
+async def browse_model_card(request):
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 1.0
+        payload = await request.json()
+        lora_name = payload.get("lora_name", "")
+        enable_civitai_fallback = bool(payload.get("enable_civitai_fallback", False))
 
+        if not lora_name:
+            return web.json_response(
+                {
+                    "success": False,
+                    "display_text": "[Browse] LoRA が選択されていません。",
+                },
+                status=400,
+            )
 
-def _format_preview_text(lora_name, strength_model, trigger_words):
-    if not trigger_words:
-        return _build_lora_tag(lora_name, strength_model)
-
-    cleaned_trigger_words = str(trigger_words).strip()
-    if cleaned_trigger_words.startswith(PREVIEW_PREFIX):
-        return cleaned_trigger_words
-
-    lora_tag = _build_lora_tag(lora_name, strength_model)
-    return f"{lora_tag}, {cleaned_trigger_words}" if cleaned_trigger_words else lora_tag
-
-
-def _build_lora_tag(lora_name, strength_model):
-    prompt_lora_name = PurePosixPath(str(lora_name).replace("\\", "/")).with_suffix("").as_posix()
-    strength_text = format(strength_model, "g")
-    return f"<lora:{prompt_lora_name}:{strength_text}>"
+        result = trigger_word_resolver.resolve_model_card(
+            lora_name=lora_name,
+            enable_civitai_fallback=enable_civitai_fallback,
+        )
+        return web.json_response(result)
+    except Exception as exc:
+        message = f"[Browse] model card 取得エラー: {exc}"
+        print(message)
+        return web.json_response(
+            {
+                "success": False,
+                "display_text": message,
+            },
+            status=500,
+        )

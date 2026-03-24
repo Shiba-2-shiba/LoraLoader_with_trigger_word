@@ -146,6 +146,42 @@ class TriggerWordMetadataRepository:
             }
         return payload
 
+    def build_civitai_model_card(self, metadata):
+        civitai_section = self._get_civitai_section(metadata)
+        if not civitai_section:
+            return None
+
+        model_id = self._coerce_int(
+            civitai_section.get("modelId")
+            or ((civitai_section.get("model") or {}).get("id"))
+            or metadata.get("modelId")
+        )
+        version_id = self._coerce_int(
+            civitai_section.get("modelVersionId")
+            or civitai_section.get("id")
+            or metadata.get("modelVersionId")
+        )
+        if model_id is None:
+            return None
+
+        civitai_url = f"https://civitai.com/models/{model_id}"
+        if version_id is not None:
+            civitai_url += f"?modelVersionId={version_id}"
+
+        model_name = self._analyzer.string_or_empty(
+            ((civitai_section.get("model") or {}).get("name"))
+            or metadata.get("model_name")
+        )
+        version_name = self._analyzer.string_or_empty(civitai_section.get("name"))
+
+        return {
+            "civitai_url": civitai_url,
+            "model_id": str(model_id),
+            "version_id": str(version_id) if version_id is not None else None,
+            "model_name": model_name or None,
+            "version_name": version_name or None,
+        }
+
     def calculate_sha256(self, file_path):
         sha256_hash = hashlib.sha256()
         with open(file_path, "rb") as file:
@@ -180,3 +216,12 @@ class TriggerWordMetadataRepository:
 
     def _warn(self, message):
         print(f"[LoraLoaderModelOnlyTriggerWords] Warning: {message}")
+
+    def _get_civitai_section(self, metadata):
+        if not isinstance(metadata, dict):
+            return None
+        civitai_section = metadata.get("civitai")
+        return civitai_section if isinstance(civitai_section, dict) else None
+
+    def _coerce_int(self, value):
+        return self._analyzer.coerce_int(value)
