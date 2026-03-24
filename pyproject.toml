@@ -1,0 +1,14 @@
+[project]
+name = "lora-loader-with-trigger-word"
+description = "ComfyUI custom node that applies a LoRA to MODEL and returns trigger words from local metadata, embedded safetensors metadata, and optional Civitai by-hash fallback."
+version = "0.1.0"
+license = { text = "MIT" }
+
+[project.urls]
+Repository = "https://github.com/YOUR_USERNAME/LoraLoader_with_trigger_word"
+
+[tool.comfy]
+PublisherId = "YOUR_PUBLISHER_ID"
+DisplayName = "LoraLoader with Trigger Word"
+Icon = ""
+web = "web"
