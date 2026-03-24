@@ -63,6 +63,78 @@ class TriggerWordResolver:
             enable_civitai_fallback=enable_civitai_fallback,
         )
 
+    def resolve_output(self, lora_name, trigger_word_source, enable_civitai_fallback):
+        return self._coerce_downstream_text(
+            self.resolve(
+                lora_name=lora_name,
+                trigger_word_source=trigger_word_source,
+                enable_civitai_fallback=enable_civitai_fallback,
+            )
+        )
+
+    def resolve_output_path(self, lora_path, trigger_word_source, enable_civitai_fallback):
+        return self._coerce_downstream_text(
+            self.resolve_path(
+                lora_path=lora_path,
+                trigger_word_source=trigger_word_source,
+                enable_civitai_fallback=enable_civitai_fallback,
+            )
+        )
+
+    def resolve_model_card(self, lora_name, enable_civitai_fallback):
+        if folder_paths is None:
+            raise RuntimeError("folder_paths is not available outside ComfyUI")
+
+        lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+        return self.resolve_model_card_path(
+            lora_path=lora_path,
+            enable_civitai_fallback=enable_civitai_fallback,
+        )
+
+    def resolve_model_card_path(self, lora_path, enable_civitai_fallback):
+        local_metadata = self._load_json_metadata(lora_path)
+        local_card = self._build_civitai_model_card(local_metadata)
+        if local_card:
+            return self._format_model_card_result(local_card, "local metadata", local_metadata)
+
+        fallback_metadata = None
+        if enable_civitai_fallback:
+            fallback_metadata = self._load_civitai_metadata_by_hash(lora_path)
+            fallback_card = self._build_civitai_model_card(fallback_metadata)
+            if fallback_card:
+                return self._format_model_card_result(
+                    fallback_card,
+                    "Civitai by-hash fallback/cache",
+                    fallback_metadata,
+                )
+
+        lora_name = os.path.basename(str(lora_path))
+        if enable_civitai_fallback:
+            display_text = (
+                f"[Browse] {lora_name}\n"
+                "Civitai model card URL を解決できませんでした。\n"
+                f"Local metadata: {self._describe_model_card_metadata(local_metadata)}\n"
+                f"By-hash fallback/cache: {self._describe_model_card_metadata(fallback_metadata)}"
+            )
+        else:
+            display_text = (
+                f"[Browse] {lora_name}\n"
+                "Civitai model card URL を解決できませんでした。\n"
+                f"Local metadata: {self._describe_model_card_metadata(local_metadata)}\n"
+                "By-hash fallback/cache: disabled"
+            )
+
+        return {
+            "success": False,
+            "civitai_url": None,
+            "model_id": None,
+            "version_id": None,
+            "model_name": None,
+            "version_name": None,
+            "source_label": None,
+            "display_text": display_text,
+        }
+
     def _get_trigger_words_combined(self, lora_path, enable_civitai_fallback):
         metadata, source_label = self._get_metadata_with_optional_fallback(
             lora_path=lora_path,
@@ -392,6 +464,12 @@ class TriggerWordResolver:
     def _normalize_civitai_payload(self, payload):
         return self._metadata_repository.normalize_civitai_payload(payload)
 
+    def _build_civitai_model_card(self, metadata):
+        return self._metadata_repository.build_civitai_model_card(metadata)
+
+    def _build_civitai_model_card_details(self, metadata):
+        return self._metadata_repository.build_civitai_model_card_details(metadata)
+
     def _calculate_sha256(self, file_path):
         return self._metadata_repository.calculate_sha256(file_path)
 
@@ -416,6 +494,53 @@ class TriggerWordResolver:
                 return " Civitai fallback を使用しました。"
             return " Civitai fallback は有効でしたが、使えるデータを返しませんでした。"
         return " Civitai fallback は無効です。"
+
+    def _coerce_downstream_text(self, text):
+        cleaned = self._string_or_empty(text).strip()
+        if cleaned.startswith(PREVIEW_PREFIX):
+            return ""
+        return cleaned
+
+    def _format_model_card_result(self, card, source_label, metadata=None):
+        model_name = self._string_or_empty(card.get("model_name"))
+        version_name = self._string_or_empty(card.get("version_name"))
+        title = model_name or "Unknown model"
+        lines = [
+            "[Browse]",
+            title,
+            f"Source: {source_label}",
+            f"Model ID: {card.get('model_id') or '-'}",
+            f"Version ID: {card.get('version_id') or '-'}",
+        ]
+        if version_name:
+            lines.append(f"Version Name: {version_name}")
+        lines.append(f"URL: {card.get('civitai_url')}")
+
+        return {
+            "success": True,
+            "civitai_url": card.get("civitai_url"),
+            "model_id": card.get("model_id"),
+            "version_id": card.get("version_id"),
+            "model_name": card.get("model_name"),
+            "version_name": card.get("version_name"),
+            "source_label": source_label,
+            "display_text": "\n".join(lines),
+            "card_data": self._build_civitai_model_card_details(metadata) if metadata else None,
+        }
+
+    def _describe_model_card_metadata(self, metadata):
+        if not metadata:
+            return "not found"
+
+        card = self._build_civitai_model_card(metadata)
+        if card:
+            version_id = card.get("version_id") or "-"
+            return f"resolved modelId={card.get('model_id')}, versionId={version_id}"
+
+        civitai_section = self._get_civitai_section(metadata)
+        if civitai_section:
+            return "found, but modelId/versionId could not be derived"
+        return "found, but no civitai-compatible fields were present"
 
     def _remove_lora_syntax(self, text):
         return self._analyzer.remove_lora_syntax(text)

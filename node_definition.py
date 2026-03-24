@@ -9,7 +9,7 @@ from .constants import (
     NODE_ID,
     TRIGGER_WORD_SOURCES,
 )
-from .services import lora_model_loader
+from .services import lora_model_loader, trigger_word_resolver
 
 
 class LoraLoaderModelOnlyTriggerWordsNode(io.ComfyNode):
@@ -20,8 +20,8 @@ class LoraLoaderModelOnlyTriggerWordsNode(io.ComfyNode):
             display_name=NODE_DISPLAY_NAME,
             category=NODE_CATEGORY,
             description=(
-                "LoRA を MODEL に適用し、sidecar JSON、埋め込み safetensors metadata、"
-                "必要に応じて Civitai by-hash fallback からトリガーワード文字列を返します。"
+                "LoRA を MODEL に適用し、選択した取得モードに応じた trigger words 文字列を"
+                "downstream に流します。"
             ),
             search_aliases=[
                 "lora trigger words",
@@ -63,15 +63,22 @@ class LoraLoaderModelOnlyTriggerWordsNode(io.ComfyNode):
                     "loaded_trigger_words",
                     multiline=True,
                     default="",
-                    tooltip="Load Trigger Words ボタンで取得した内容の表示欄。実行時の MODEL 適用には影響しません。",
+                    tooltip="Trigger Words / Browse タブの表示欄。実行時の出力値そのものではありません。",
                 ),
             ],
             outputs=[
                 io.Model.Output(
+                    "model",
                     display_name="MODEL",
                     tooltip="LoRA 適用後の MODEL。",
                 ),
+                io.String.Output(
+                    "trigger_words",
+                    display_name="TRIGGER_WORDS",
+                    tooltip="選択した取得モードで解決された文字列。失敗時は空文字を返します。",
+                ),
             ],
+            not_idempotent=True,
         )
 
     @classmethod
@@ -84,6 +91,11 @@ class LoraLoaderModelOnlyTriggerWordsNode(io.ComfyNode):
         enable_civitai_fallback,
         loaded_trigger_words,
     ):
-        del trigger_word_source, enable_civitai_fallback, loaded_trigger_words
         model_lora = lora_model_loader.load_model_only(model, lora_name, strength_model)
-        return io.NodeOutput(model_lora)
+        trigger_words = trigger_word_resolver.resolve_output(
+            lora_name=lora_name,
+            trigger_word_source=trigger_word_source,
+            enable_civitai_fallback=enable_civitai_fallback,
+        )
+        del loaded_trigger_words
+        return io.NodeOutput(model_lora, trigger_words)

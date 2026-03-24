@@ -5,6 +5,7 @@ NODE_DISPLAY_NAME = "Load LoRA + Trigger Words (Model Only)"
 NODE_CATEGORY = "loaders/lora"
 
 PREVIEW_ROUTE = "/lora_loader_with_trigger_word/preview"
+BROWSE_ROUTE = "/lora_loader_with_trigger_word/browse"
 PREVIEW_PREFIX = "[LoRA Trigger Words]"
 
 TRIGGER_WORD_SOURCES = (
