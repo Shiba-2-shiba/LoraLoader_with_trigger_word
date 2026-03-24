@@ -95,8 +95,9 @@ class TriggerWordResolver:
         local_metadata = self._load_json_metadata(lora_path)
         local_card = self._build_civitai_model_card(local_metadata)
         if local_card:
-            return self._format_model_card_result(local_card, "local metadata")
+            return self._format_model_card_result(local_card, "local metadata", local_metadata)
 
+        fallback_metadata = None
         if enable_civitai_fallback:
             fallback_metadata = self._load_civitai_metadata_by_hash(lora_path)
             fallback_card = self._build_civitai_model_card(fallback_metadata)
@@ -104,6 +105,7 @@ class TriggerWordResolver:
                 return self._format_model_card_result(
                     fallback_card,
                     "Civitai by-hash fallback/cache",
+                    fallback_metadata,
                 )
 
         lora_name = os.path.basename(str(lora_path))
@@ -111,13 +113,15 @@ class TriggerWordResolver:
             display_text = (
                 f"[Browse] {lora_name}\n"
                 "Civitai model card URL を解決できませんでした。\n"
-                "ローカル metadata と by-hash fallback/cache を確認しました。"
+                f"Local metadata: {self._describe_model_card_metadata(local_metadata)}\n"
+                f"By-hash fallback/cache: {self._describe_model_card_metadata(fallback_metadata)}"
             )
         else:
             display_text = (
                 f"[Browse] {lora_name}\n"
                 "Civitai model card URL を解決できませんでした。\n"
-                "ローカル metadata を確認しました。by-hash fallback は無効です。"
+                f"Local metadata: {self._describe_model_card_metadata(local_metadata)}\n"
+                "By-hash fallback/cache: disabled"
             )
 
         return {
@@ -463,6 +467,9 @@ class TriggerWordResolver:
     def _build_civitai_model_card(self, metadata):
         return self._metadata_repository.build_civitai_model_card(metadata)
 
+    def _build_civitai_model_card_details(self, metadata):
+        return self._metadata_repository.build_civitai_model_card_details(metadata)
+
     def _calculate_sha256(self, file_path):
         return self._metadata_repository.calculate_sha256(file_path)
 
@@ -494,7 +501,7 @@ class TriggerWordResolver:
             return ""
         return cleaned
 
-    def _format_model_card_result(self, card, source_label):
+    def _format_model_card_result(self, card, source_label, metadata=None):
         model_name = self._string_or_empty(card.get("model_name"))
         version_name = self._string_or_empty(card.get("version_name"))
         title = model_name or "Unknown model"
@@ -518,7 +525,22 @@ class TriggerWordResolver:
             "version_name": card.get("version_name"),
             "source_label": source_label,
             "display_text": "\n".join(lines),
+            "card_data": self._build_civitai_model_card_details(metadata) if metadata else None,
         }
+
+    def _describe_model_card_metadata(self, metadata):
+        if not metadata:
+            return "not found"
+
+        card = self._build_civitai_model_card(metadata)
+        if card:
+            version_id = card.get("version_id") or "-"
+            return f"resolved modelId={card.get('model_id')}, versionId={version_id}"
+
+        civitai_section = self._get_civitai_section(metadata)
+        if civitai_section:
+            return "found, but modelId/versionId could not be derived"
+        return "found, but no civitai-compatible fields were present"
 
     def _remove_lora_syntax(self, text):
         return self._analyzer.remove_lora_syntax(text)
