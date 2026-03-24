@@ -4,7 +4,7 @@
 LoRA の適用は `Model Only` 相当で行い、トリガーワードは複数のメタデータ経路から取得します。
 
 このパッケージは **ComfyUI V3 スキーマ / Nodes 2.0 / 現行フロントエンド互換** を前提にしています。  
-フロントエンド拡張 JavaScript は含まず、バックエンドの node schema だけで Nodes 2.0 に正しく表示される構成です。
+バックエンドは V3 schema、フロントエンドは `web/` 配下の軽量な JavaScript 拡張で構成されています。
 
 ## 特徴
 
@@ -167,8 +167,8 @@ https://civitai.com/api/v1/model-versions/by-hash/<sha256>
 - フロントエンド拡張は `web/` 配下の `app.registerExtension()` と `beforeRegisterNodeDef` を使用
 - `LGraphCanvas` や prototype patch は使わず、ノード単位の UI 拡張に限定
 
-JavaScript 拡張は含みません。  
-そのため、現行 ComfyUI フロントエンドの拡張フックや DOM パッチとの衝突を起こさない構成です。
+JavaScript 拡張は含みますが、`app.registerExtension()` と `beforeRegisterNodeDef` を使う最小構成です。  
+`LGraphCanvas` 置き換えやグローバル DOM パッチは使っていません。
 
 ## 既知の制限
 
