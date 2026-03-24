@@ -30,6 +30,7 @@ class TriggerWordResolver:
     CACHE_FILENAME = "civitai_model_info_cache.json"
     STYLE_PLACEHOLDER = "@style_name"
     FALLBACK_SCORE_THRESHOLD = 20
+    MAX_DESCRIPTION_CANDIDATE_LENGTH = 80
     GENERIC_TAGS = {
         "1girl",
         "1 boy",
@@ -355,13 +356,85 @@ class TriggerWordResolver:
             "modelspec.trigger_phrase",
             "modelspec.trigger_word",
             "modelspec.usage_hint",
-            "modelspec.description",
         ):
             value = self._string_or_empty(raw_metadata.get(key, ""))
             if value:
                 trained_words.append(value)
 
+        trained_words.extend(
+            self._extract_description_candidates(
+                raw_metadata.get("modelspec.description", "")
+            )
+        )
+
         return self._dedupe_preserve_order(trained_words)
+
+    def _extract_description_candidates(self, value):
+        text = self._string_or_empty(value)
+        if not text:
+            return []
+
+        if len(text) <= self.MAX_DESCRIPTION_CANDIDATE_LENGTH and "\n" not in text:
+            return [text]
+
+        candidates = []
+
+        trigger_like_patterns = [
+            r"(?:trigger word|trigger phrase|use tag|activation tag|prompt)\s*[:：]\s*([^\n\r]+)",
+            r"(?:use with|use)\s*[:：]\s*([^\n\r]+)",
+        ]
+        for pattern in trigger_like_patterns:
+            matches = re.findall(pattern, text, flags=re.IGNORECASE)
+            for match in matches:
+                candidates.extend(self._extract_short_segments(match))
+
+        candidates.extend(self._extract_short_segments(text))
+        return self._dedupe_preserve_order(candidates)
+
+    def _extract_short_segments(self, text):
+        text = self._string_or_empty(text)
+        if not text:
+            return []
+
+        raw_segments = re.split(r"[\n\r。！？;；]+", text)
+        candidates = []
+        for raw_segment in raw_segments:
+            segment = self._string_or_empty(raw_segment)
+            if not segment:
+                continue
+
+            comma_parts = [part.strip() for part in segment.split(",") if part.strip()]
+            if len(comma_parts) >= 2:
+                compact = ", ".join(comma_parts)
+                if self._looks_like_trigger_candidate(compact):
+                    candidates.append(compact)
+                for part in comma_parts:
+                    if self._looks_like_trigger_candidate(part):
+                        candidates.append(part)
+                continue
+
+            if self._looks_like_trigger_candidate(segment):
+                candidates.append(segment)
+
+        return candidates
+
+    def _looks_like_trigger_candidate(self, text):
+        normalized = self._normalize_token(text)
+        if not normalized:
+            return False
+        if len(text) > self.MAX_DESCRIPTION_CANDIDATE_LENGTH:
+            return False
+        if len(normalized.split()) > 8:
+            return False
+        if normalized in self.GENERIC_TAGS:
+            return False
+        return (
+            text.startswith("@")
+            or "," in text
+            or "_" in text
+            or "-" in text
+            or 1 <= len(normalized.split()) <= 4
+        )
 
     def _parse_trigger_word_value(self, value):
         if value is None:
