@@ -226,7 +226,7 @@ function injectViewerCss() {
     background: #0f1623;
 }
 
-#${VIEWER_ID} .lltwt-card img {
+#${VIEWER_ID} .lltwt-card-media {
     width: 100%;
     aspect-ratio: 1;
     object-fit: cover;
@@ -298,7 +298,7 @@ function ensureViewer() {
                     <div class="lltwt-header-copy">
                         <span class="lltwt-eyebrow">LoRA Model Card Viewer</span>
                         <h2 class="lltwt-title">Model Card</h2>
-                        <p class="lltwt-subtitle">ComfyUI 内で Civitai metadata を閲覧します。</p>
+                        <p class="lltwt-subtitle">ComfyUI 内でモデル metadata を閲覧します。</p>
                     </div>
                     <div class="lltwt-header-actions">
                         <button class="lltwt-btn" data-action="copy-url" type="button">Copy URL</button>
@@ -340,7 +340,10 @@ function ensureViewer() {
         root.querySelector(".lltwt-backdrop")?.addEventListener("click", close);
         root.querySelector('[data-action="close"]')?.addEventListener("click", close);
         root.querySelector('[data-action="copy-url"]')?.addEventListener("click", async () => {
-            const url = root.__lltwtCurrentCard?.civitai_url || "";
+            const url =
+                root.__lltwtCurrentCard?.primary_url ||
+                root.__lltwtCurrentCard?.civitai_url ||
+                "";
             if (!url || !navigator.clipboard?.writeText) {
                 return;
             }
@@ -392,6 +395,15 @@ function createMetric(label, value) {
     return item;
 }
 
+function isVideoMedia(image) {
+    const mediaType = String(image?.media_type || "").toLowerCase();
+    if (mediaType === "video") {
+        return true;
+    }
+    const url = String(image?.url || "").toLowerCase();
+    return [".mp4", ".webm", ".mov", ".m4v"].some((ext) => url.includes(ext));
+}
+
 function openViewer(cardData) {
     if (!cardData) {
         return;
@@ -433,7 +445,7 @@ function openViewer(cardData) {
                     Number.isInteger(cardData.thumbs_up_count) ? `Likes ${cardData.thumbs_up_count}` : null,
                 ].filter(Boolean).join(" | ")
             ),
-            createMetric("URL", cardData.civitai_url)
+            createMetric("URL", cardData.primary_url || cardData.civitai_url)
         );
     }
 
@@ -462,10 +474,28 @@ function openViewer(cardData) {
             const card = document.createElement("article");
             card.className = "lltwt-card";
 
-            const img = document.createElement("img");
-            img.loading = "lazy";
-            img.src = image.url;
-            img.alt = cardData.model_name || "LoRA preview";
+            let media;
+            if (isVideoMedia(image)) {
+                const video = document.createElement("video");
+                video.className = "lltwt-card-media";
+                video.src = image.url;
+                video.controls = true;
+                video.muted = true;
+                video.loop = true;
+                video.playsInline = true;
+                video.preload = "metadata";
+                if (image.poster_url) {
+                    video.poster = image.poster_url;
+                }
+                media = video;
+            } else {
+                const img = document.createElement("img");
+                img.className = "lltwt-card-media";
+                img.loading = "lazy";
+                img.src = image.url;
+                img.alt = cardData.model_name || "LoRA preview";
+                media = img;
+            }
 
             const copy = document.createElement("div");
             copy.className = "lltwt-card-copy";
@@ -484,7 +514,7 @@ function openViewer(cardData) {
                 copy.appendChild(prompt);
             }
 
-            card.append(img, copy);
+            card.append(media, copy);
             images.appendChild(card);
         }
         setSectionEmptyState(images, imagesEmpty, imageList.length === 0);
@@ -615,7 +645,7 @@ app.registerExtension({
                         body: JSON.stringify(getRequestPayload()),
                     });
                     const data = await readJsonResponse(response);
-                    state.modelCardUrl = data.civitai_url || "";
+                    state.modelCardUrl = data.primary_url || data.civitai_url || "";
                     state.modelCardData = data.card_data
                         ? {
                             ...data.card_data,

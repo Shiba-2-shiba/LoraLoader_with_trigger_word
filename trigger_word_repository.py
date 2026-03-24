@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import html
 import json
 import os
 import re
 from pathlib import Path
-from urllib import error, request
 
 try:
     from safetensors.torch import safe_open
@@ -19,15 +17,36 @@ except ImportError:
 
 try:
     from .trigger_word_analyzer import TriggerWordAnalyzer
+    from .remote_metadata.providers import (
+        CivitaiMetadataProvider,
+        CivArchiveMetadataProvider,
+    )
 except ImportError:
     from trigger_word_analyzer import TriggerWordAnalyzer
+    from remote_metadata.providers import (
+        CivitaiMetadataProvider,
+        CivArchiveMetadataProvider,
+    )
 
 
 class TriggerWordMetadataRepository:
     CACHE_FILENAME = "civitai_model_info_cache.json"
 
-    def __init__(self, analyzer: TriggerWordAnalyzer | None = None):
+    def __init__(
+        self,
+        analyzer: TriggerWordAnalyzer | None = None,
+        civitai_provider: CivitaiMetadataProvider | None = None,
+        civarchive_provider: CivArchiveMetadataProvider | None = None,
+    ):
         self._analyzer = analyzer or TriggerWordAnalyzer()
+        self._civitai_provider = civitai_provider or CivitaiMetadataProvider(
+            cache_path=os.path.join(os.path.dirname(__file__), self.CACHE_FILENAME),
+            warn_handler=self._warn,
+        )
+        self._civarchive_provider = civarchive_provider or CivArchiveMetadataProvider(
+            cache_path=os.path.join(os.path.dirname(__file__), "civarchive_model_info_cache.json"),
+            warn_handler=self._warn,
+        )
 
     def load_json_metadata(self, lora_path):
         base_path = os.path.splitext(lora_path)[0]
@@ -102,35 +121,11 @@ class TriggerWordMetadataRepository:
         return [candidate]
 
     def load_civitai_metadata_by_hash(self, lora_path):
-        cache = self.load_civitai_cache()
-        sha256_hash = self.calculate_sha256(lora_path)
+        payload = self._civitai_provider.load_metadata_by_hash(lora_path)
+        return self.normalize_civitai_payload(payload)
 
-        if sha256_hash in cache:
-            return self.normalize_civitai_payload(cache[sha256_hash])
-
-        api_url = f"https://civitai.com/api/v1/model-versions/by-hash/{sha256_hash}"
-        request_obj = request.Request(
-            api_url,
-            headers={
-                "User-Agent": "LoraLoader-with-trigger-word/0.1",
-                "Accept": "application/json",
-            },
-        )
-        try:
-            with request.urlopen(request_obj, timeout=10) as response:
-                if response.status != 200:
-                    self._warn(f"Civitai by-hash request returned HTTP {response.status}")
-                    return None
-                payload = json.loads(response.read().decode("utf-8"))
-        except error.URLError as exc:
-            self._warn(f"Civitai by-hash request failed: {exc}")
-            return None
-        except Exception as exc:
-            self._warn(f"Failed to parse Civitai by-hash response: {exc}")
-            return None
-
-        cache[sha256_hash] = payload
-        self.save_civitai_cache(cache)
+    def load_civarchive_metadata_by_hash(self, lora_path):
+        payload = self._civarchive_provider.load_metadata_by_hash(lora_path)
         return self.normalize_civitai_payload(payload)
 
     def normalize_civitai_payload(self, payload):
@@ -145,7 +140,7 @@ class TriggerWordMetadataRepository:
             }
         return payload
 
-    def build_civitai_model_card(self, metadata):
+    def build_model_card(self, metadata):
         metadata = self.normalize_civitai_payload(metadata)
         if not isinstance(metadata, dict):
             return None
@@ -154,13 +149,14 @@ class TriggerWordMetadataRepository:
         if not civitai_section:
             return None
 
-        direct_url = self._extract_civitai_url(metadata, civitai_section)
-        parsed_url_model_id, parsed_url_version_id = self._parse_civitai_url(direct_url)
+        direct_url = self._extract_model_card_url(metadata, civitai_section)
+        parsed_url_model_id, parsed_url_version_id = self._parse_model_card_url(direct_url)
         parsed_air_model_id, parsed_air_version_id = self._parse_civitai_air(
             self._analyzer.string_or_empty(civitai_section.get("air") or metadata.get("air"))
         )
         model_id = self._coerce_int(
-            civitai_section.get("modelId")
+            civitai_section.get("civitai_model_id")
+            or civitai_section.get("modelId")
             or ((civitai_section.get("model") or {}).get("id"))
             or ((metadata.get("model") or {}).get("id"))
             or metadata.get("modelId")
@@ -168,7 +164,8 @@ class TriggerWordMetadataRepository:
             or parsed_air_model_id
         )
         version_id = self._coerce_int(
-            civitai_section.get("modelVersionId")
+            civitai_section.get("civitai_model_version_id")
+            or civitai_section.get("modelVersionId")
             or civitai_section.get("id")
             or ((civitai_section.get("modelVersion") or {}).get("id"))
             or metadata.get("id")
@@ -180,9 +177,31 @@ class TriggerWordMetadataRepository:
         if model_id is None:
             return None
 
-        civitai_url = direct_url or f"https://civitai.com/models/{model_id}"
-        if direct_url is None and version_id is not None:
-            civitai_url += f"?modelVersionId={version_id}"
+        prefer_civarchive = self._is_civarchive_model_card(metadata, civitai_section)
+        primary_url = direct_url or self._build_model_card_url(
+            model_id,
+            version_id,
+            prefer_civarchive=prefer_civarchive,
+        )
+        civarchive_url = self._extract_civarchive_url(metadata, civitai_section)
+        if not civarchive_url and prefer_civarchive:
+            civarchive_url = self._build_model_card_url(
+                model_id,
+                version_id,
+                prefer_civarchive=True,
+            )
+
+        civitai_model_id = self._coerce_int(civitai_section.get("civitai_model_id") or model_id)
+        civitai_version_id = self._coerce_int(
+            civitai_section.get("civitai_model_version_id") or version_id
+        )
+        civitai_url = self._extract_civitai_url(metadata, civitai_section)
+        if not civitai_url and civitai_model_id is not None:
+            civitai_url = self._build_model_card_url(
+                civitai_model_id,
+                civitai_version_id,
+                prefer_civarchive=False,
+            )
 
         model_name = self._analyzer.string_or_empty(
             ((civitai_section.get("model") or {}).get("name"))
@@ -194,16 +213,23 @@ class TriggerWordMetadataRepository:
         )
 
         return {
-            "civitai_url": civitai_url,
+            "primary_url": primary_url,
+            "civitai_url": civitai_url or None,
+            "civarchive_url": civarchive_url or None,
+            "alternate_urls": {
+                "civitai": civitai_url or None,
+                "civarchive": civarchive_url or None,
+            },
             "model_id": str(model_id),
             "version_id": str(version_id) if version_id is not None else None,
             "model_name": model_name or None,
             "version_name": version_name or None,
+            "url_source": "civarchive" if self._is_civarchive_url(primary_url) else "civitai",
         }
 
-    def build_civitai_model_card_details(self, metadata):
+    def build_model_card_details(self, metadata):
         metadata = self.normalize_civitai_payload(metadata)
-        card = self.build_civitai_model_card(metadata)
+        card = self.build_model_card(metadata)
         if not card:
             return None
 
@@ -219,16 +245,20 @@ class TriggerWordMetadataRepository:
         for image in civitai_section.get("images") or []:
             if not isinstance(image, dict):
                 continue
-            image_url = self._analyzer.string_or_empty(image.get("url"))
-            if not image_url:
+            media_type = self._normalize_media_type(image)
+            media_url = self._extract_media_url(image, media_type)
+            if not media_url:
                 continue
             meta = image.get("meta") if isinstance(image.get("meta"), dict) else {}
             prompt = self._analyzer.string_or_empty(meta.get("prompt"))
+            poster_url = self._extract_media_poster_url(image, media_type)
             image_items.append(
                 {
-                    "url": image_url,
+                    "url": media_url,
                     "width": self._coerce_int(image.get("width")),
                     "height": self._coerce_int(image.get("height")),
+                    "media_type": media_type,
+                    "poster_url": poster_url or None,
                     "prompt": prompt or None,
                 }
             )
@@ -256,37 +286,23 @@ class TriggerWordMetadataRepository:
             "thumbs_up_count": self._coerce_int(stats.get("thumbsUpCount")),
         }
 
+    def build_civitai_model_card(self, metadata):
+        return self.build_model_card(metadata)
+
+    def build_civitai_model_card_details(self, metadata):
+        return self.build_model_card_details(metadata)
+
     def calculate_sha256(self, file_path):
-        sha256_hash = hashlib.sha256()
-        with open(file_path, "rb") as file:
-            for chunk in iter(lambda: file.read(4096), b""):
-                sha256_hash.update(chunk)
-        return sha256_hash.hexdigest()
+        return self._civitai_provider.calculate_sha256(file_path)
 
     def load_civitai_cache(self):
-        cache_path = self.get_cache_path()
-        if not os.path.exists(cache_path):
-            return {}
-
-        try:
-            with open(cache_path, "r", encoding="utf-8") as file:
-                data = json.load(file)
-        except Exception as exc:
-            self._warn(f"Failed to read Civitai cache {cache_path}: {exc}")
-            return {}
-
-        return data if isinstance(data, dict) else {}
+        return self._civitai_provider.load_cache()
 
     def save_civitai_cache(self, cache):
-        cache_path = self.get_cache_path()
-        try:
-            with open(cache_path, "w", encoding="utf-8") as file:
-                json.dump(cache, file, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            self._warn(f"Failed to write Civitai cache {cache_path}: {exc}")
+        self._civitai_provider.save_cache(cache)
 
     def get_cache_path(self):
-        return os.path.join(os.path.dirname(__file__), self.CACHE_FILENAME)
+        return self._civitai_provider.get_cache_path()
 
     def _merge_metadata_documents(self, primary, secondary):
         if primary is None:
@@ -322,23 +338,49 @@ class TriggerWordMetadataRepository:
             return bool(value)
         return True
 
+    def _extract_model_card_url(self, metadata, civitai_section):
+        return self._extract_civarchive_url(metadata, civitai_section) or self._extract_civitai_url(
+            metadata,
+            civitai_section,
+        )
+
+    def _extract_civarchive_url(self, metadata, civitai_section):
+        meta_section = civitai_section.get("meta") if isinstance(civitai_section.get("meta"), dict) else {}
+        metadata_meta = metadata.get("meta") if isinstance(metadata.get("meta"), dict) else {}
+        for candidate in (
+            civitai_section.get("archiveUrl"),
+            civitai_section.get("civarchiveUrl"),
+            civitai_section.get("canonicalUrl"),
+            meta_section.get("canonical"),
+            metadata.get("archiveUrl"),
+            metadata.get("civarchiveUrl"),
+            metadata.get("canonicalUrl"),
+            metadata_meta.get("canonical"),
+        ):
+            text = self._analyzer.string_or_empty(candidate)
+            if self._is_civarchive_url(text):
+                return text
+        return None
+
     def _extract_civitai_url(self, metadata, civitai_section):
         for candidate in (
             civitai_section.get("url"),
+            civitai_section.get("platform_url"),
             civitai_section.get("modelUrl"),
             civitai_section.get("modelCardUrl"),
             civitai_section.get("civitaiUrl"),
             metadata.get("url"),
+            metadata.get("platform_url"),
             metadata.get("modelUrl"),
             metadata.get("modelCardUrl"),
             metadata.get("civitaiUrl"),
         ):
             text = self._analyzer.string_or_empty(candidate)
-            if text.startswith("https://civitai.com/models/"):
+            if self._is_civitai_url(text):
                 return text
         return None
 
-    def _parse_civitai_url(self, url):
+    def _parse_model_card_url(self, url):
         text = self._analyzer.string_or_empty(url)
         if not text:
             return None, None
@@ -348,6 +390,27 @@ class TriggerWordMetadataRepository:
         model_id = self._coerce_int(model_match.group(1)) if model_match else None
         version_id = self._coerce_int(version_match.group(1)) if version_match else None
         return model_id, version_id
+
+    def _build_model_card_url(self, model_id, version_id, prefer_civarchive):
+        base_url = "https://civarchive.com/models" if prefer_civarchive else "https://civitai.com/models"
+        url = f"{base_url}/{model_id}"
+        if version_id is not None:
+            url += f"?modelVersionId={version_id}"
+        return url
+
+    def _is_civarchive_model_card(self, metadata, civitai_section):
+        if self._extract_civarchive_url(metadata, civitai_section):
+            return True
+        source = self._analyzer.string_or_empty(civitai_section.get("source") or metadata.get("source"))
+        return source == "civarchive"
+
+    def _is_civarchive_url(self, url):
+        text = self._analyzer.string_or_empty(url)
+        return text.startswith("https://civarchive.com/models/")
+
+    def _is_civitai_url(self, url):
+        text = self._analyzer.string_or_empty(url)
+        return text.startswith("https://civitai.com/models/")
 
     def _parse_civitai_air(self, air_value):
         text = self._analyzer.string_or_empty(air_value)
@@ -379,6 +442,42 @@ class TriggerWordMetadataRepository:
     def _warn(self, message):
         print(f"[LoraLoaderModelOnlyTriggerWords] Warning: {message}")
 
+    def _normalize_media_type(self, image):
+        explicit_type = self._analyzer.string_or_empty(image.get("type")).lower()
+        if explicit_type in {"image", "video"}:
+            return explicit_type
+        if self._analyzer.string_or_empty(image.get("video_url")):
+            return "video"
+
+        media_url = self._analyzer.string_or_empty(
+            image.get("url") or image.get("image_url") or image.get("video_url")
+        ).lower()
+        if any(token in media_url for token in (".mp4", ".webm", ".mov", ".m4v")):
+            return "video"
+        return "image"
+
+    def _extract_media_url(self, image, media_type):
+        candidates = []
+        if media_type == "video":
+            candidates.extend((image.get("video_url"), image.get("url"), image.get("image_url")))
+        else:
+            candidates.extend((image.get("image_url"), image.get("url"), image.get("video_url")))
+
+        for candidate in candidates:
+            text = self._analyzer.string_or_empty(candidate)
+            if text:
+                return text
+        return None
+
+    def _extract_media_poster_url(self, image, media_type):
+        if media_type != "video":
+            return None
+        for candidate in (image.get("image_url"), image.get("thumbnail_url")):
+            text = self._analyzer.string_or_empty(candidate)
+            if text:
+                return text
+        return None
+
     def _get_civitai_section(self, metadata):
         if not isinstance(metadata, dict):
             return None
@@ -387,3 +486,5 @@ class TriggerWordMetadataRepository:
 
     def _coerce_int(self, value):
         return self._analyzer.coerce_int(value)
+
+
