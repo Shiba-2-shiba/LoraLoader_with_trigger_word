@@ -15,11 +15,12 @@ app.registerExtension({
             const result = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
 
             const loraWidget = this.widgets?.find((widget) => widget.name === "lora_name");
+            const strengthWidget = this.widgets?.find((widget) => widget.name === "strength_model");
             const sourceWidget = this.widgets?.find((widget) => widget.name === "trigger_word_source");
             const fallbackWidget = this.widgets?.find((widget) => widget.name === "enable_civitai_fallback");
             const previewWidget = this.widgets?.find((widget) => widget.name === "loaded_trigger_words");
 
-            if (!loraWidget || !sourceWidget || !fallbackWidget || !previewWidget) {
+            if (!loraWidget || !strengthWidget || !sourceWidget || !fallbackWidget || !previewWidget) {
                 return result;
             }
 
@@ -52,6 +53,7 @@ app.registerExtension({
                             },
                             body: JSON.stringify({
                                 lora_name: loraName,
+                                strength_model: strengthWidget.value,
                                 trigger_word_source: sourceWidget.value,
                                 enable_civitai_fallback: Boolean(fallbackWidget.value),
                             }),

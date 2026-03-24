@@ -1,0 +1,3 @@
+__pycache__/
+*.pyc
+civitai_model_info_cache.json
