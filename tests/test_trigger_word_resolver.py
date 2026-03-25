@@ -519,6 +519,7 @@ class TriggerWordResolverTests(unittest.TestCase):
     def test_model_card_failure_returns_provider_neutral_contract(self):
         with (
             patch.object(self.resolver, "_load_json_metadata", return_value=None),
+            patch.object(self.resolver, "_load_huggingface_reference_metadata", return_value=None),
             patch.object(self.resolver, "_load_civarchive_metadata_by_hash", return_value=None),
             patch.object(self.resolver, "_load_civitai_metadata_by_hash", return_value=None),
         ):
@@ -532,8 +533,35 @@ class TriggerWordResolverTests(unittest.TestCase):
         self.assertIsNone(result["civitai_url"])
         self.assertIsNone(result["civarchive_url"])
         self.assertIn("Model card URL を解決できませんでした。", result["display_text"])
+        self.assertIn("Bundled Hugging Face reference metadata: not found", result["display_text"])
         self.assertIn("CivArchive by-hash fallback/cache: not found", result["display_text"])
         self.assertIn("Civitai by-hash fallback/cache: not found", result["display_text"])
+
+    def test_model_card_failure_reports_huggingface_reference_trigger_words(self):
+        with (
+            patch.object(self.resolver, "_load_json_metadata", return_value=None),
+            patch.object(
+                self.resolver,
+                "_load_huggingface_reference_metadata",
+                return_value={
+                    "civitai": {"trainedWords": ["69,ass focus"]},
+                    "_huggingface_reference": {
+                        "source": "https://huggingface.co/example",
+                        "model_key": "69_ass_focus_v1_Illustrious",
+                    },
+                },
+            ),
+            patch.object(self.resolver, "_load_civarchive_metadata_by_hash", return_value=None),
+            patch.object(self.resolver, "_load_civitai_metadata_by_hash", return_value=None),
+        ):
+            result = self.resolver.resolve_model_card_path(
+                lora_path=r"C:\tmp\69_ass_focus_v1_Illustrious.safetensors",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("recognized bundled reference entry", result["display_text"])
+        self.assertIn("69,ass focus", result["display_text"])
 
 
 class TriggerWordMetadataRepositoryTests(unittest.TestCase):

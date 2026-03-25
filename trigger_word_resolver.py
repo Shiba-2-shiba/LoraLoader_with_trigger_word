@@ -97,6 +97,7 @@ class TriggerWordResolver:
         if local_card:
             return self._format_model_card_result(local_card, "local metadata", local_metadata)
 
+        huggingface_reference_metadata = self._load_huggingface_reference_metadata(lora_path)
         fallback_results = []
         if enable_civitai_fallback:
             for fallback_label, fallback_loader in self._iter_model_card_fallback_loaders():
@@ -113,6 +114,10 @@ class TriggerWordResolver:
         lora_name = os.path.basename(str(lora_path))
         diagnostic_lines = [
             f"Local metadata: {self._describe_model_card_metadata(local_metadata)}",
+            (
+                "Bundled Hugging Face reference metadata: "
+                f"{self._describe_model_card_metadata(huggingface_reference_metadata)}"
+            ),
         ]
         if enable_civitai_fallback:
             if fallback_results:
@@ -638,9 +643,32 @@ class TriggerWordResolver:
             )
 
         civitai_section = self._get_civitai_section(metadata)
+        trained_words = self._extract_usable_trained_words(metadata)
+        trigger_words_summary = self._summarize_trigger_words(trained_words)
+        if metadata.get("_huggingface_reference"):
+            if trained_words:
+                return (
+                    "recognized bundled reference entry, "
+                    f"trigger words available ({trigger_words_summary}), but no model card URL metadata"
+                )
+            return "recognized bundled reference entry, but no model card URL metadata"
         if civitai_section:
+            if trained_words:
+                return (
+                    "found, trigger words available "
+                    f"({trigger_words_summary}), but modelId/versionId could not be derived"
+                )
             return "found, but modelId/versionId could not be derived"
         return "found, but no civitai-compatible fields were present"
+
+    def _summarize_trigger_words(self, trained_words):
+        words = [self._string_or_empty(word) for word in trained_words if self._string_or_empty(word)]
+        if not words:
+            return "-"
+        preview = ", ".join(words[:3])
+        if len(words) > 3:
+            preview += ", ..."
+        return preview
 
     def _remove_lora_syntax(self, text):
         return self._analyzer.remove_lora_syntax(text)
