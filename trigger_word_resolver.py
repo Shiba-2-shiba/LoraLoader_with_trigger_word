@@ -152,7 +152,7 @@ class TriggerWordResolver:
             prefer_embedded_only=False,
         )
         trained_words = self._extract_usable_trained_words(metadata)
-        if not trained_words and self._indicates_trigger_words_optional(metadata, lora_path):
+        if self._indicates_trigger_words_optional(metadata, lora_path):
             return self._no_trigger_words_message(lora_path, metadata, source_label)
         if not trained_words:
             return self._failure_message(
@@ -191,7 +191,7 @@ class TriggerWordResolver:
             prefer_embedded_only=False,
         )
         trained_words = self._extract_usable_trained_words(metadata)
-        if not trained_words and self._indicates_trigger_words_optional(metadata, lora_path):
+        if self._indicates_trigger_words_optional(metadata, lora_path):
             return self._no_trigger_words_message(lora_path, metadata, source_label)
         if not trained_words:
             return self._failure_message(
@@ -277,10 +277,10 @@ class TriggerWordResolver:
                         break
 
         trained_words = self._extract_usable_trained_words(best_metadata)
-        if not trained_words and self._indicates_trigger_words_optional(best_metadata, lora_path):
+        if self._indicates_trigger_words_optional(best_metadata, lora_path):
             return self._no_trigger_words_message(lora_path, best_metadata, source_label)
 
-        if not trained_words and not self._indicates_trigger_words_optional(best_metadata, lora_path):
+        if not trained_words:
             filename_fallback = self._build_filename_fallback_metadata(lora_path)
             trained_words = self._extract_usable_trained_words(filename_fallback)
             if trained_words:

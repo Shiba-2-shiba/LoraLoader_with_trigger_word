@@ -17,6 +17,18 @@ class TriggerWordAnalyzer:
         "style",
         "styles",
     }
+    TRIGGER_WORD_OPTIONAL_NAME_HINTS = {
+        "slider",
+        "sliders",
+        "style",
+        "styles",
+        "detail",
+        "details",
+        "microdetail",
+        "microdetails",
+        "enhancer",
+        "enhancers",
+    }
     GENERIC_TAGS = {
         "1girl",
         "1 boy",
@@ -84,7 +96,7 @@ class TriggerWordAnalyzer:
             return []
 
         if len(text) <= self.MAX_DESCRIPTION_CANDIDATE_LENGTH and "\n" not in text:
-            return [text]
+            return [text] if self.looks_like_trigger_candidate(text) else []
 
         candidates = []
         trigger_like_patterns = [
@@ -134,6 +146,8 @@ class TriggerWordAnalyzer:
             return False
         if len(normalized.split()) > 8:
             return False
+        if self.looks_like_reference_text(text):
+            return False
         if normalized in self.GENERIC_TAGS:
             return False
         return (
@@ -143,6 +157,14 @@ class TriggerWordAnalyzer:
             or "-" in text
             or 1 <= len(normalized.split()) <= 4
         )
+
+    def looks_like_reference_text(self, text):
+        normalized = self.normalize_token(text)
+        if not normalized:
+            return False
+        if "http://" in text or "https://" in text:
+            return True
+        return normalized.startswith(("available on civitai", "available on civarchive"))
 
     def parse_trigger_word_value(self, value):
         if value is None:
@@ -475,7 +497,24 @@ class TriggerWordAnalyzer:
 
     def has_explicit_trained_words(self, metadata):
         civitai_section = self.get_civitai_section(metadata)
-        return isinstance(civitai_section, dict) and "trainedWords" in civitai_section
+        if not isinstance(civitai_section, dict):
+            return False
+
+        raw_metadata = metadata.get("_embedded_raw_metadata") if isinstance(metadata, dict) else None
+        if isinstance(raw_metadata, dict):
+            for key in ("trained_words", "ss_trained_words"):
+                if self.parse_trigger_word_value(raw_metadata.get(key)):
+                    return True
+            for key in (
+                "modelspec.trigger_phrase",
+                "modelspec.trigger_word",
+                "modelspec.usage_hint",
+            ):
+                if self.string_or_empty(raw_metadata.get(key)):
+                    return True
+            return False
+
+        return "trainedWords" in civitai_section
 
     def extract_metadata_tags(self, metadata):
         civitai_section = self.get_civitai_section(metadata)
@@ -525,18 +564,22 @@ class TriggerWordAnalyzer:
             return False
 
         trained_words = self.extract_trained_words(metadata)
+        explicit_trained_words = self.has_explicit_trained_words(metadata)
         if self.STYLE_PLACEHOLDER in trained_words:
             return True
-        if trained_words:
-            return False
-        if not self.has_explicit_trained_words(metadata):
+        if trained_words and explicit_trained_words:
             return False
 
         tags = set(self.extract_metadata_tags(metadata))
         if tags & self.TRIGGER_WORD_OPTIONAL_TAGS:
             return True
 
-        return any("slider" in name for name in self.extract_metadata_names(metadata, lora_path))
+        optional_name_hints = self.extract_optional_name_hints(metadata, lora_path)
+        if not optional_name_hints:
+            return False
+        if not trained_words:
+            return True
+        return self.inferred_trained_words_are_name_derived(metadata, lora_path)
 
     def describe_trigger_words_optional(self, metadata, lora_path):
         trained_words = self.extract_trained_words(metadata)
@@ -554,13 +597,46 @@ class TriggerWordAnalyzer:
                 f"{matched} が含まれるため、明示トリガーワード不要モデルと判定しました。"
             )
 
-        if any("slider" in name for name in self.extract_metadata_names(metadata, lora_path)):
+        optional_name_hints = self.extract_optional_name_hints(metadata, lora_path)
+        if optional_name_hints:
+            matched = ", ".join(sorted(optional_name_hints))
             return (
-                "trainedWords が空で、モデル名またはファイル名に slider が含まれるため、"
-                "明示トリガーワード不要モデルと判定しました。"
+                "埋め込み metadata 由来の候補がモデル名由来のみで、モデル名またはファイル名に "
+                f"{matched} が含まれるため、明示トリガーワード不要モデルと判定しました。"
             )
 
         return "明示トリガーワード不要モデルと判定しました。"
+
+    def extract_optional_name_hints(self, metadata, lora_path):
+        matched = set()
+        for name in self.extract_metadata_names(metadata, lora_path):
+            for hint in self.TRIGGER_WORD_OPTIONAL_NAME_HINTS:
+                if hint in name:
+                    matched.add(hint)
+        return matched
+
+    def inferred_trained_words_are_name_derived(self, metadata, lora_path):
+        if self.has_explicit_trained_words(metadata):
+            return False
+
+        names = self.extract_metadata_names(metadata, lora_path)
+        if not names:
+            return False
+
+        trained_words = self.extract_usable_trained_words(metadata)
+        if not trained_words:
+            return False
+
+        for candidate in trained_words:
+            normalized_candidate = self.normalize_token(candidate)
+            if not normalized_candidate:
+                return False
+            if not any(
+                normalized_candidate == name or normalized_candidate in name
+                for name in names
+            ):
+                return False
+        return True
 
     def remove_lora_syntax(self, text):
         return re.sub(r"<lora:[^>]+>", "", text)

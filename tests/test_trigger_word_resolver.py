@@ -291,6 +291,36 @@ class TriggerWordResolverTests(unittest.TestCase):
         self.assertIn("明示トリガーワード不要モデル", result)
         self.assertNotIn("contrast slider", result.lower())
 
+    def test_json_combined_reports_no_trigger_needed_for_detail_model_with_name_derived_words(self):
+        metadata = {
+            "_embedded_raw_metadata": {
+                "modelspec.description": "Available on Civitai - https://civitai.com/user/example",
+            },
+            "civitai": {
+                "trainedWords": ["addmicrodetails"],
+            },
+            "model_name": "AddMicroDetails_Illustrious",
+        }
+
+        with patch.object(
+            self.resolver,
+            "_get_metadata_with_optional_fallback",
+            return_value=(metadata, "embedded metadata"),
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\AddMicroDetails_Illustrious_v5.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=False,
+            )
+            downstream = self.resolver.resolve_output_path(
+                lora_path=r"C:\tmp\AddMicroDetails_Illustrious_v5.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=False,
+        )
+
+        self.assertIn("明示トリガーワード不要モデル", result)
+        self.assertEqual(downstream, "")
+
     def test_metadata_uses_bundled_huggingface_reference_before_remote_fallback(self):
         with (
             patch.object(self.resolver, "_load_embedded_metadata", return_value=None),
@@ -585,6 +615,37 @@ class TriggerWordMetadataRepositoryTests(unittest.TestCase):
             result["_huggingface_reference"]["source"],
             "https://huggingface.co/example",
         )
+
+    def test_load_embedded_metadata_ignores_reference_description_urls(self):
+        with patch.object(
+            self.repository,
+            "_read_safetensors_metadata",
+            return_value={
+                "modelspec.description": "Available on Civitai - https://civitai.com/user/example",
+                "ss_output_name": "AddMicroDetails_Illustrious",
+                "ss_tag_frequency": json.dumps(
+                    {
+                        "4_addmicrodetails clothes": {
+                            "addmicrodetails": 50,
+                            "solo": 23,
+                        }
+                    }
+                ),
+                "ss_dataset_dirs": json.dumps(
+                    {
+                        "4_addmicrodetails clothes": {
+                            "img_count": 50,
+                        }
+                    }
+                ),
+                "ss_num_train_images": "50",
+            },
+        ):
+            result = self.repository.load_embedded_metadata(
+                r"C:\tmp\AddMicroDetails_Illustrious_v5.safetensors"
+            )
+
+        self.assertEqual(result["civitai"]["trainedWords"], ["addmicrodetails"])
 
     def test_build_civitai_model_card_details_sanitizes_description_and_images(self):
         details = self.repository.build_civitai_model_card_details(
