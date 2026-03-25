@@ -151,7 +151,9 @@ class TriggerWordResolver:
             require_images=False,
             prefer_embedded_only=False,
         )
-        trained_words = self._extract_trained_words(metadata)
+        trained_words = self._extract_usable_trained_words(metadata)
+        if not trained_words and self._indicates_trigger_words_optional(metadata, lora_path):
+            return self._no_trigger_words_message(lora_path, metadata, source_label)
         if not trained_words:
             return self._failure_message(
                 lora_path,
@@ -188,7 +190,9 @@ class TriggerWordResolver:
             require_images=False,
             prefer_embedded_only=False,
         )
-        trained_words = self._extract_trained_words(metadata)
+        trained_words = self._extract_usable_trained_words(metadata)
+        if not trained_words and self._indicates_trigger_words_optional(metadata, lora_path):
+            return self._no_trigger_words_message(lora_path, metadata, source_label)
         if not trained_words:
             return self._failure_message(
                 lora_path,
@@ -241,31 +245,44 @@ class TriggerWordResolver:
         return positive
 
     def _get_trigger_words_from_embedded(self, lora_path, enable_civitai_fallback):
-        embedded = self._load_embedded_metadata(lora_path)
+        best_metadata = self._load_embedded_metadata(lora_path)
         source_label = "embedded metadata"
-        trained_words = self._extract_trained_words(embedded)
 
-        if enable_civitai_fallback and self._should_attempt_fallback_for_words(
-            trained_words,
+        if enable_civitai_fallback and self._should_attempt_fallback_for_metadata(
+            best_metadata,
             lora_path,
+            require_images=False,
         ):
             for fallback_label, fallback_loader in self._iter_remote_fallback_loaders():
-                if not self._should_attempt_fallback_for_words(trained_words, lora_path):
+                if not self._should_attempt_fallback_for_metadata(
+                    best_metadata,
+                    lora_path,
+                    require_images=False,
+                ):
                     break
                 fallback = fallback_loader(lora_path)
-                fallback_words = self._extract_trained_words(fallback)
-                if fallback_words and self._should_prefer_fallback(
-                    local_words=trained_words,
-                    fallback_words=fallback_words,
-                    lora_path=lora_path,
-                ):
-                    trained_words = fallback_words
-                    source_label = fallback_label
-                    break
+                if self._metadata_satisfies_request(fallback, False, lora_path):
+                    best_metadata, source_label = self._pick_better_metadata(
+                        current_metadata=best_metadata,
+                        current_label=source_label,
+                        candidate_metadata=fallback,
+                        candidate_label=fallback_label,
+                        lora_path=lora_path,
+                        require_images=False,
+                    )
+                    if (
+                        best_metadata is fallback
+                        and self._extract_usable_trained_words(fallback)
+                    ):
+                        break
 
-        if not trained_words:
+        trained_words = self._extract_usable_trained_words(best_metadata)
+        if not trained_words and self._indicates_trigger_words_optional(best_metadata, lora_path):
+            return self._no_trigger_words_message(lora_path, best_metadata, source_label)
+
+        if not trained_words and not self._indicates_trigger_words_optional(best_metadata, lora_path):
             filename_fallback = self._build_filename_fallback_metadata(lora_path)
-            trained_words = self._extract_trained_words(filename_fallback)
+            trained_words = self._extract_usable_trained_words(filename_fallback)
             if trained_words:
                 source_label = "filename fallback"
 
@@ -294,7 +311,7 @@ class TriggerWordResolver:
             metadata = self._load_json_metadata(lora_path)
             source_label = "local metadata"
 
-        if self._metadata_satisfies_request(metadata, require_images):
+        if self._metadata_satisfies_request(metadata, require_images, lora_path):
             best_metadata = metadata
             best_label = source_label
         else:
@@ -303,7 +320,7 @@ class TriggerWordResolver:
 
         if not prefer_embedded_only:
             embedded = self._load_embedded_metadata(lora_path)
-            if self._metadata_satisfies_request(embedded, require_images):
+            if self._metadata_satisfies_request(embedded, require_images, lora_path):
                 best_metadata, best_label = self._pick_better_metadata(
                     current_metadata=best_metadata,
                     current_label=best_label,
@@ -326,7 +343,7 @@ class TriggerWordResolver:
                 ):
                     break
                 fallback = fallback_loader(lora_path)
-                if self._metadata_satisfies_request(fallback, require_images):
+                if self._metadata_satisfies_request(fallback, require_images, lora_path):
                     best_metadata, best_label = self._pick_better_metadata(
                         current_metadata=best_metadata,
                         current_label=best_label,
@@ -335,25 +352,34 @@ class TriggerWordResolver:
                         lora_path=lora_path,
                         require_images=require_images,
                     )
+                    if best_metadata is fallback:
+                        if require_images and self._score_image_metadata(fallback) > 0:
+                            break
+                        if (
+                            not require_images
+                            and self._extract_usable_trained_words(fallback)
+                        ):
+                            break
 
-        filename_fallback = self._build_filename_fallback_metadata(lora_path)
-        if self._metadata_satisfies_request(filename_fallback, require_images):
-            best_metadata, best_label = self._pick_better_metadata(
-                current_metadata=best_metadata,
-                current_label=best_label,
-                candidate_metadata=filename_fallback,
-                candidate_label="filename fallback",
-                lora_path=lora_path,
-                require_images=require_images,
-            )
+        if not self._indicates_trigger_words_optional(best_metadata, lora_path):
+            filename_fallback = self._build_filename_fallback_metadata(lora_path)
+            if self._metadata_satisfies_request(filename_fallback, require_images, lora_path):
+                best_metadata, best_label = self._pick_better_metadata(
+                    current_metadata=best_metadata,
+                    current_label=best_label,
+                    candidate_metadata=filename_fallback,
+                    candidate_label="filename fallback",
+                    lora_path=lora_path,
+                    require_images=require_images,
+                )
 
         if best_metadata is not None:
             return best_metadata, best_label
 
         return metadata, source_label
 
-    def _metadata_satisfies_request(self, metadata, require_images):
-        return self._analyzer.metadata_satisfies_request(metadata, require_images)
+    def _metadata_satisfies_request(self, metadata, require_images, lora_path=None):
+        return self._analyzer.metadata_satisfies_request(metadata, require_images, lora_path)
 
     def _load_json_metadata(self, lora_path):
         return self._metadata_repository.load_json_metadata(lora_path)
@@ -496,6 +522,15 @@ class TriggerWordResolver:
     def _extract_trained_words(self, metadata):
         return self._analyzer.extract_trained_words(metadata)
 
+    def _extract_usable_trained_words(self, metadata):
+        return self._analyzer.extract_usable_trained_words(metadata)
+
+    def _indicates_trigger_words_optional(self, metadata, lora_path):
+        return self._analyzer.indicates_trigger_words_optional(metadata, lora_path)
+
+    def _describe_trigger_words_optional(self, metadata, lora_path):
+        return self._analyzer.describe_trigger_words_optional(metadata, lora_path)
+
     def _normalize_civitai_payload(self, payload):
         return self._metadata_repository.normalize_civitai_payload(payload)
 
@@ -528,6 +563,13 @@ class TriggerWordResolver:
         message = f"{PREVIEW_PREFIX} {lora_name}: {reason}"
         print(message)
         return message
+
+    def _no_trigger_words_message(self, lora_path, metadata, source_label):
+        del source_label
+        return self._failure_message(
+            lora_path,
+            self._describe_trigger_words_optional(metadata, lora_path),
+        )
 
     def _fallback_suffix(self, enable_civitai_fallback, source_label):
         if enable_civitai_fallback:

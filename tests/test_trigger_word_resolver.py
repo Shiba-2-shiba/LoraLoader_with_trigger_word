@@ -219,6 +219,78 @@ class TriggerWordResolverTests(unittest.TestCase):
 
         self.assertEqual(result, "hero tag")
 
+    def test_json_combined_reports_no_trigger_needed_for_style_model_with_empty_trained_words(self):
+        metadata = {
+            "civitai": {
+                "trainedWords": [],
+                "model": {
+                    "name": "Watercolor Style",
+                    "tags": ["style"],
+                },
+            }
+        }
+
+        with patch.object(
+            self.resolver,
+            "_get_metadata_with_optional_fallback",
+            return_value=(metadata, "Civitai by-hash fallback"),
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\watercolor_style.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=True,
+            )
+            downstream = self.resolver.resolve_output_path(
+                lora_path=r"C:\tmp\watercolor_style.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertIn("明示トリガーワード不要モデル", result)
+        self.assertEqual(downstream, "")
+
+    def test_metadata_reports_no_trigger_needed_for_style_placeholder(self):
+        with patch.object(
+            self.resolver,
+            "_load_embedded_metadata",
+            return_value={"civitai": {"trainedWords": [self.resolver.STYLE_PLACEHOLDER]}},
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\stylistic_pack.safetensors",
+                trigger_word_source="metadata",
+                enable_civitai_fallback=False,
+            )
+
+        self.assertIn("明示トリガーワード不要モデル", result)
+        self.assertNotIn(self.resolver.STYLE_PLACEHOLDER, result)
+
+    def test_metadata_does_not_use_filename_fallback_for_empty_slider_metadata(self):
+        with (
+            patch.object(self.resolver, "_load_embedded_metadata", return_value=None),
+            patch.object(
+                self.resolver,
+                "_load_civitai_metadata_by_hash",
+                return_value={
+                    "civitai": {
+                        "trainedWords": [],
+                        "model": {
+                            "name": "Contrast Slider",
+                            "tags": ["slider"],
+                        },
+                    }
+                },
+            ),
+            patch.object(self.resolver, "_load_civarchive_metadata_by_hash", return_value=None),
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\contrast-slider_v1.safetensors",
+                trigger_word_source="metadata",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertIn("明示トリガーワード不要モデル", result)
+        self.assertNotIn("contrast slider", result.lower())
+
     def test_resolve_output_path_returns_empty_string_for_failure_message(self):
         with patch.object(
             self.resolver,
