@@ -4,10 +4,11 @@ import folder_paths
 from comfy_api.latest import io
 
 from .constants import (
+    DEFAULT_TRIGGER_WORD_SOURCE,
+    ENABLE_REMOTE_METADATA_FALLBACK,
     NODE_CATEGORY,
     NODE_DISPLAY_NAME,
     NODE_ID,
-    TRIGGER_WORD_SOURCES,
 )
 from .services import lora_model_loader, trigger_word_resolver
 
@@ -20,8 +21,8 @@ class LoraLoaderModelOnlyTriggerWordsNode(io.ComfyNode):
             display_name=NODE_DISPLAY_NAME,
             category=NODE_CATEGORY,
             description=(
-                "LoRA を MODEL に適用し、選択した取得モードに応じた trigger words 文字列を"
-                "downstream に流します。"
+                "LoRA を MODEL に適用し、自動判定した trigger words 文字列を"
+                " downstream に流します。"
             ),
             search_aliases=[
                 "lora trigger words",
@@ -46,18 +47,6 @@ class LoraLoaderModelOnlyTriggerWordsNode(io.ComfyNode):
                     min=-100.0,
                     max=100.0,
                     tooltip="MODEL に適用する LoRA 強度。負の値も指定可能です。",
-                ),
-                io.Combo.Input(
-                    "trigger_word_source",
-                    options=list(TRIGGER_WORD_SOURCES),
-                    default="json_combined",
-                    tooltip="トリガーワードの取得モード。",
-                ),
-                io.Boolean.Input(
-                    "enable_civitai_fallback",
-                    default=True,
-                    advanced=True,
-                    tooltip="ローカル metadata で不足した場合に SHA256 から Civitai by-hash API を参照します。",
                 ),
                 io.String.Input(
                     "loaded_trigger_words",
@@ -87,15 +76,13 @@ class LoraLoaderModelOnlyTriggerWordsNode(io.ComfyNode):
         model,
         lora_name,
         strength_model,
-        trigger_word_source,
-        enable_civitai_fallback,
         loaded_trigger_words,
     ):
         model_lora = lora_model_loader.load_model_only(model, lora_name, strength_model)
         trigger_words = trigger_word_resolver.resolve_output(
             lora_name=lora_name,
-            trigger_word_source=trigger_word_source,
-            enable_civitai_fallback=enable_civitai_fallback,
+            trigger_word_source=DEFAULT_TRIGGER_WORD_SOURCE,
+            enable_civitai_fallback=ENABLE_REMOTE_METADATA_FALLBACK,
         )
         del loaded_trigger_words
         return io.NodeOutput(model_lora, trigger_words)

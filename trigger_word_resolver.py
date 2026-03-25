@@ -113,22 +113,22 @@ class TriggerWordResolver:
 
         lora_name = os.path.basename(str(lora_path))
         diagnostic_lines = [
-            f"Local metadata: {self._describe_model_card_metadata(local_metadata)}",
+            f"ローカル metadata: {self._describe_model_card_metadata(local_metadata)}",
             (
-                "Bundled Hugging Face reference metadata: "
+                "同梱 Hugging Face 参照 metadata: "
                 f"{self._describe_model_card_metadata(huggingface_reference_metadata)}"
             ),
         ]
         if enable_civitai_fallback:
             if fallback_results:
                 diagnostic_lines.extend(
-                    f"{label}: {self._describe_model_card_metadata(metadata)}"
+                    f"{self._localize_source_label(label)}: {self._describe_model_card_metadata(metadata)}"
                     for label, metadata in fallback_results
                 )
             else:
-                diagnostic_lines.append("Remote fallback: no providers configured")
+                diagnostic_lines.append("リモート fallback: 利用可能な provider がありません")
         else:
-            diagnostic_lines.append("Remote fallback: disabled")
+            diagnostic_lines.append("リモート fallback: 無効です")
 
         display_text = (
             f"[Browse] {lora_name}\n"
@@ -583,7 +583,7 @@ class TriggerWordResolver:
     def _fallback_suffix(self, enable_civitai_fallback, source_label):
         if enable_civitai_fallback:
             if source_label == "Bundled Hugging Face reference metadata":
-                return " Bundled Hugging Face reference metadata を使用しました。"
+                return " 同梱 Hugging Face 参照 metadata を使用しました。"
             if source_label == "Civitai by-hash fallback":
                 return " Civitai fallback を使用しました。"
             if source_label == "CivArchive by-hash fallback":
@@ -600,17 +600,17 @@ class TriggerWordResolver:
     def _format_model_card_result(self, card, source_label, metadata=None):
         model_name = self._string_or_empty(card.get("model_name"))
         version_name = self._string_or_empty(card.get("version_name"))
-        title = model_name or "Unknown model"
+        title = model_name or "不明なモデル"
         primary_url = self._string_or_empty(card.get("primary_url"))
         lines = [
             "[Browse]",
             title,
-            f"Source: {source_label}",
-            f"Model ID: {card.get('model_id') or '-'}",
-            f"Version ID: {card.get('version_id') or '-'}",
+            f"取得元: {self._localize_source_label(source_label)}",
+            f"モデル ID: {card.get('model_id') or '-'}",
+            f"バージョン ID: {card.get('version_id') or '-'}",
         ]
         if version_name:
-            lines.append(f"Version Name: {version_name}")
+            lines.append(f"バージョン名: {version_name}")
         lines.append(f"URL: {primary_url or '-'}")
 
         return {
@@ -631,15 +631,15 @@ class TriggerWordResolver:
 
     def _describe_model_card_metadata(self, metadata):
         if not metadata:
-            return "not found"
+            return "見つかりませんでした"
 
         card = self._build_model_card(metadata)
         if card:
             version_id = card.get("version_id") or "-"
             url_source = card.get("url_source") or "unknown"
             return (
-                f"resolved modelId={card.get('model_id')}, "
-                f"versionId={version_id}, urlSource={url_source}"
+                f"modelId={card.get('model_id')} / "
+                f"versionId={version_id} / URL 取得元={self._localize_url_source(url_source)}"
             )
 
         civitai_section = self._get_civitai_section(metadata)
@@ -648,18 +648,19 @@ class TriggerWordResolver:
         if metadata.get("_huggingface_reference"):
             if trained_words:
                 return (
-                    "recognized bundled reference entry, "
-                    f"trigger words available ({trigger_words_summary}), but no model card URL metadata"
+                    "同梱参照エントリとして認識済みで、"
+                    f"トリガーワード取得は可能です ({trigger_words_summary})。"
+                    "ただし model card URL 用 metadata はありません"
                 )
-            return "recognized bundled reference entry, but no model card URL metadata"
+            return "同梱参照エントリとして認識済みですが、model card URL 用 metadata はありません"
         if civitai_section:
             if trained_words:
                 return (
-                    "found, trigger words available "
-                    f"({trigger_words_summary}), but modelId/versionId could not be derived"
+                    f"トリガーワード取得は可能です ({trigger_words_summary})。"
+                    "ただし modelId / versionId を導出できませんでした"
                 )
-            return "found, but modelId/versionId could not be derived"
-        return "found, but no civitai-compatible fields were present"
+            return "metadata は見つかりましたが、modelId / versionId を導出できませんでした"
+        return "metadata は見つかりましたが、civitai 互換の URL 情報はありません"
 
     def _summarize_trigger_words(self, trained_words):
         words = [self._string_or_empty(word) for word in trained_words if self._string_or_empty(word)]
@@ -669,6 +670,27 @@ class TriggerWordResolver:
         if len(words) > 3:
             preview += ", ..."
         return preview
+
+    def _localize_source_label(self, source_label):
+        mapping = {
+            "local metadata": "ローカル metadata",
+            "embedded metadata": "埋め込み metadata",
+            "filename fallback": "ファイル名 fallback",
+            "Bundled Hugging Face reference metadata": "同梱 Hugging Face 参照 metadata",
+            "Civitai by-hash fallback": "Civitai by-hash fallback",
+            "CivArchive by-hash fallback": "CivArchive by-hash fallback",
+            "CivArchive by-hash fallback/cache": "CivArchive by-hash fallback/cache",
+            "Civitai by-hash fallback/cache": "Civitai by-hash fallback/cache",
+        }
+        return mapping.get(source_label, source_label or "-")
+
+    def _localize_url_source(self, url_source):
+        mapping = {
+            "civitai": "Civitai",
+            "civarchive": "CivArchive",
+            "unknown": "不明",
+        }
+        return mapping.get(url_source, url_source or "不明")
 
     def _remove_lora_syntax(self, text):
         return self._analyzer.remove_lora_syntax(text)

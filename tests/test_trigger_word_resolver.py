@@ -533,9 +533,9 @@ class TriggerWordResolverTests(unittest.TestCase):
         self.assertIsNone(result["civitai_url"])
         self.assertIsNone(result["civarchive_url"])
         self.assertIn("Model card URL を解決できませんでした。", result["display_text"])
-        self.assertIn("Bundled Hugging Face reference metadata: not found", result["display_text"])
-        self.assertIn("CivArchive by-hash fallback/cache: not found", result["display_text"])
-        self.assertIn("Civitai by-hash fallback/cache: not found", result["display_text"])
+        self.assertIn("同梱 Hugging Face 参照 metadata: 見つかりませんでした", result["display_text"])
+        self.assertIn("CivArchive by-hash fallback/cache: 見つかりませんでした", result["display_text"])
+        self.assertIn("Civitai by-hash fallback/cache: 見つかりませんでした", result["display_text"])
 
     def test_model_card_failure_reports_huggingface_reference_trigger_words(self):
         with (
@@ -560,7 +560,7 @@ class TriggerWordResolverTests(unittest.TestCase):
             )
 
         self.assertFalse(result["success"])
-        self.assertIn("recognized bundled reference entry", result["display_text"])
+        self.assertIn("同梱参照エントリとして認識済み", result["display_text"])
         self.assertIn("69,ass focus", result["display_text"])
 
 
