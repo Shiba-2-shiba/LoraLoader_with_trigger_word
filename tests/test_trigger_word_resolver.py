@@ -291,6 +291,27 @@ class TriggerWordResolverTests(unittest.TestCase):
         self.assertIn("明示トリガーワード不要モデル", result)
         self.assertNotIn("contrast slider", result.lower())
 
+    def test_metadata_uses_bundled_huggingface_reference_before_remote_fallback(self):
+        with (
+            patch.object(self.resolver, "_load_embedded_metadata", return_value=None),
+            patch.object(
+                self.resolver,
+                "_load_huggingface_reference_metadata",
+                return_value={"civitai": {"trainedWords": ["69,ass focus"]}},
+            ),
+            patch.object(self.resolver, "_load_civitai_metadata_by_hash") as civitai_loader,
+            patch.object(self.resolver, "_load_civarchive_metadata_by_hash") as civarchive_loader,
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\69_ass_focus_v1_Illustrious.safetensors",
+                trigger_word_source="metadata",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertEqual(result, "69,ass focus")
+        civitai_loader.assert_not_called()
+        civarchive_loader.assert_not_called()
+
     def test_resolve_output_path_returns_empty_string_for_failure_message(self):
         with patch.object(
             self.resolver,
@@ -526,6 +547,43 @@ class TriggerWordMetadataRepositoryTests(unittest.TestCase):
         self.assertEqual(
             card["civitai_url"],
             "https://civitai.com/models/123?modelVersionId=456",
+        )
+
+    def test_load_huggingface_reference_metadata_matches_embedded_title(self):
+        with (
+            patch.object(
+                self.repository,
+                "_read_safetensors_metadata",
+                return_value={
+                    "ss_output_name": "69_ass_focus_v1_Illustrious",
+                    "modelspec.title": "69_ass_focus_v1_Illustrious",
+                },
+            ),
+            patch.object(
+                self.repository,
+                "_load_huggingface_reference_catalog",
+                return_value=[
+                    {
+                        "source": "https://huggingface.co/example",
+                        "model_key": "69_ass_focus_v1_Illustrious",
+                        "aliases": ["69_ass_focus_v1_Illustrious"],
+                        "sd_version": "SDXL",
+                        "activation_text": "69,ass focus",
+                        "description": "sample",
+                        "text_body": "sample text",
+                    }
+                ],
+            ),
+        ):
+            result = self.repository.load_huggingface_reference_metadata(
+                r"C:\tmp\renamed_model.safetensors"
+            )
+
+        self.assertEqual(result["civitai"]["trainedWords"], ["69,ass focus"])
+        self.assertEqual(result["model_name"], "69_ass_focus_v1_Illustrious")
+        self.assertEqual(
+            result["_huggingface_reference"]["source"],
+            "https://huggingface.co/example",
         )
 
     def test_build_civitai_model_card_details_sanitizes_description_and_images(self):

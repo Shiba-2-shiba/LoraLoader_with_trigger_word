@@ -507,8 +507,12 @@ class TriggerWordResolver:
     def _load_civarchive_metadata_by_hash(self, lora_path):
         return self._metadata_repository.load_civarchive_metadata_by_hash(lora_path)
 
+    def _load_huggingface_reference_metadata(self, lora_path):
+        return self._metadata_repository.load_huggingface_reference_metadata(lora_path)
+
     def _iter_remote_fallback_loaders(self):
         return [
+            ("Bundled Hugging Face reference metadata", self._load_huggingface_reference_metadata),
             ("Civitai by-hash fallback", self._load_civitai_metadata_by_hash),
             ("CivArchive by-hash fallback", self._load_civarchive_metadata_by_hash),
         ]
@@ -573,6 +577,8 @@ class TriggerWordResolver:
 
     def _fallback_suffix(self, enable_civitai_fallback, source_label):
         if enable_civitai_fallback:
+            if source_label == "Bundled Hugging Face reference metadata":
+                return " Bundled Hugging Face reference metadata を使用しました。"
             if source_label == "Civitai by-hash fallback":
                 return " Civitai fallback を使用しました。"
             if source_label == "CivArchive by-hash fallback":

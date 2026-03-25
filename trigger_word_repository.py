@@ -31,6 +31,11 @@ except ImportError:
 
 class TriggerWordMetadataRepository:
     CACHE_FILENAME = "civitai_model_info_cache.json"
+    HUGGINGFACE_REFERENCE_CATALOG = os.path.join(
+        os.path.dirname(__file__),
+        "reference_metadata",
+        "huggingface_lora_catalog.json",
+    )
 
     def __init__(
         self,
@@ -47,6 +52,7 @@ class TriggerWordMetadataRepository:
             cache_path=os.path.join(os.path.dirname(__file__), "civarchive_model_info_cache.json"),
             warn_handler=self._warn,
         )
+        self._huggingface_reference_catalog_cache = None
 
     def load_json_metadata(self, lora_path):
         base_path = os.path.splitext(lora_path)[0]
@@ -68,14 +74,7 @@ class TriggerWordMetadataRepository:
         return loaded_metadata
 
     def load_embedded_metadata(self, lora_path):
-        if not SAFETENSORS_AVAILABLE:
-            return None
-
-        try:
-            with safe_open(lora_path, framework="pt", device="cpu") as file:
-                raw_metadata = file.metadata()
-        except Exception:
-            return None
+        raw_metadata = self._read_safetensors_metadata(lora_path)
 
         if not raw_metadata:
             return None
@@ -95,6 +94,27 @@ class TriggerWordMetadataRepository:
             civitai_format["model_name"] = model_name
 
         return civitai_format if civitai_format["civitai"] or model_name else None
+
+    def load_huggingface_reference_metadata(self, lora_path):
+        raw_metadata = self._read_safetensors_metadata(lora_path)
+        if not raw_metadata:
+            return None
+
+        catalog = self._load_huggingface_reference_catalog()
+        if not catalog:
+            return None
+
+        candidates = self._build_reference_match_candidates(lora_path, raw_metadata)
+        if not candidates:
+            return None
+
+        for entry in catalog:
+            if not isinstance(entry, dict):
+                continue
+            if self._reference_entry_matches(entry, candidates):
+                return self._build_huggingface_reference_payload(entry)
+
+        return None
 
     def build_filename_fallback_metadata(self, lora_path):
         fallback_candidates = self.build_filename_fallback_candidates(lora_path)
@@ -303,6 +323,124 @@ class TriggerWordMetadataRepository:
 
     def get_cache_path(self):
         return self._civitai_provider.get_cache_path()
+
+    def _read_safetensors_metadata(self, lora_path):
+        if not SAFETENSORS_AVAILABLE:
+            return None
+
+        try:
+            with safe_open(lora_path, framework="pt", device="cpu") as file:
+                return file.metadata()
+        except Exception:
+            return None
+
+    def _normalize_huggingface_sidecar_payload(self, payload, text_sidecar=None):
+        if not isinstance(payload, dict):
+            return None
+
+        huggingface_keys = {
+            "activation text",
+            "sd version",
+            "preferred weight",
+            "negative text",
+            "notes",
+        }
+        if not (huggingface_keys & set(payload.keys())):
+            return None
+
+        activation_text = self._analyzer.string_or_empty(payload.get("activation text"))
+        description = self._analyzer.string_or_empty(payload.get("description"))
+        notes = self._analyzer.string_or_empty(payload.get("notes"))
+        negative_text = self._analyzer.string_or_empty(payload.get("negative text"))
+        sd_version = self._analyzer.string_or_empty(payload.get("sd version"))
+        text_body = self._analyzer.string_or_empty(text_sidecar)
+
+        normalized = {
+            "civitai": {
+                "trainedWords": [activation_text] if activation_text else [],
+            },
+            "description": text_body or description or None,
+            "baseModel": sd_version or None,
+            "_huggingface_sidecar_raw": payload,
+            "_huggingface_text_sidecar": text_body or None,
+        }
+
+        if notes:
+            normalized["notes"] = notes
+        if negative_text:
+            normalized["negative_text"] = negative_text
+
+        return normalized
+
+    def _load_huggingface_reference_catalog(self):
+        if self._huggingface_reference_catalog_cache is not None:
+            return self._huggingface_reference_catalog_cache
+
+        path = self.HUGGINGFACE_REFERENCE_CATALOG
+        if not os.path.exists(path):
+            self._huggingface_reference_catalog_cache = []
+            return self._huggingface_reference_catalog_cache
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+        except Exception as exc:
+            self._warn(f"Failed to load Hugging Face reference catalog {path}: {exc}")
+            self._huggingface_reference_catalog_cache = []
+            return self._huggingface_reference_catalog_cache
+
+        if isinstance(payload, dict):
+            entries = payload.get("entries")
+            self._huggingface_reference_catalog_cache = entries if isinstance(entries, list) else []
+            return self._huggingface_reference_catalog_cache
+        self._huggingface_reference_catalog_cache = payload if isinstance(payload, list) else []
+        return self._huggingface_reference_catalog_cache
+
+    def _build_reference_match_candidates(self, lora_path, raw_metadata):
+        candidates = [
+            self._analyzer.string_or_empty(raw_metadata.get("ss_output_name")),
+            self._analyzer.string_or_empty(raw_metadata.get("modelspec.title")),
+            Path(lora_path).stem,
+        ]
+        return {
+            self._analyzer.normalize_token(candidate)
+            for candidate in candidates
+            if self._analyzer.normalize_token(candidate)
+        }
+
+    def _reference_entry_matches(self, entry, candidates):
+        reference_keys = [
+            entry.get("model_key"),
+            *(entry.get("aliases") or []),
+        ]
+        normalized_keys = {
+            self._analyzer.normalize_token(key)
+            for key in reference_keys
+            if self._analyzer.normalize_token(key)
+        }
+        return bool(candidates & normalized_keys)
+
+    def _build_huggingface_reference_payload(self, entry):
+        payload = self._normalize_huggingface_sidecar_payload(
+            {
+                "description": entry.get("description"),
+                "sd version": entry.get("sd_version"),
+                "activation text": entry.get("activation_text"),
+                "preferred weight": entry.get("preferred_weight", 0),
+                "negative text": entry.get("negative_text"),
+                "notes": entry.get("notes"),
+            },
+            text_sidecar=entry.get("text_body"),
+        )
+        if payload is None:
+            return None
+
+        payload["model_name"] = entry.get("model_key") or payload.get("model_name")
+        payload["_huggingface_reference"] = {
+            "source": entry.get("source"),
+            "model_key": entry.get("model_key"),
+            "aliases": entry.get("aliases") or [],
+        }
+        return payload
 
     def _merge_metadata_documents(self, primary, secondary):
         if primary is None:
