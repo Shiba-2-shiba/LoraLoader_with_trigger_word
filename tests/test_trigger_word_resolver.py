@@ -745,6 +745,67 @@ class TriggerWordMetadataRepositoryTests(unittest.TestCase):
             "https://vid.genur.art/unsafe/450x0/example",
         )
 
+    def test_build_model_card_details_uses_genur_gallery_fallback_when_images_missing(self):
+        repository = TriggerWordMetadataRepository(
+            genur_client=DummyGenurGalleryClient(
+                payload={
+                    "results": [
+                        {
+                            "id": 120918894,
+                            "type": "image",
+                            "url": "https://img.genur.art/example-1.webp",
+                            "prompt": "sample gallery prompt",
+                            "width": 832,
+                            "height": 1216,
+                        },
+                        {
+                            "id": 120918895,
+                            "type": "video",
+                            "video_url": "https://c.genur.art/example-video",
+                            "image_url": "https://vid.genur.art/example-poster.webp",
+                            "prompt": "sample gallery video",
+                        },
+                    ]
+                }
+            )
+        )
+
+        details = repository.build_model_card_details(
+            {
+                "civitai": {
+                    "id": 2685238,
+                    "modelId": 2385403,
+                    "civitai_model_id": 2385403,
+                    "civitai_model_version_id": 2685238,
+                    "name": "AnimaP_NP43iV2",
+                    "model": {"name": "Example Gallery LoRA", "type": "LORA"},
+                    "images": [],
+                    "nsfwLevel": 31,
+                }
+            }
+        )
+
+        self.assertIsNotNone(details)
+        self.assertEqual(details["civitai_version_id"], "2685238")
+        self.assertEqual(details["images"][0]["url"], "https://img.genur.art/example-1.webp")
+        self.assertEqual(details["images"][0]["prompt"], "sample gallery prompt")
+        self.assertEqual(details["images"][1]["media_type"], "video")
+        self.assertEqual(details["images"][1]["url"], "https://c.genur.art/example-video")
+        self.assertEqual(
+            details["images"][1]["poster_url"],
+            "https://vid.genur.art/example-poster.webp",
+        )
+        self.assertEqual(
+            repository._genur_client.calls,
+            [
+                {
+                    "model_version_id": 2685238,
+                    "is_nsfw": True,
+                    "sort": "top",
+                }
+            ],
+        )
+
 
 class DummyCivitaiClient:
     def __init__(self, payload=None, warning_message=None):
@@ -754,6 +815,23 @@ class DummyCivitaiClient:
 
     def fetch_model_version_by_hash(self, sha256_hash):
         self.calls.append(sha256_hash)
+        return self.payload, self.warning_message
+
+
+class DummyGenurGalleryClient:
+    def __init__(self, payload=None, warning_message=None):
+        self.payload = payload
+        self.warning_message = warning_message
+        self.calls = []
+
+    def fetch_model_gallery(self, model_version_id, *, is_nsfw=None, sort="top"):
+        self.calls.append(
+            {
+                "model_version_id": model_version_id,
+                "is_nsfw": is_nsfw,
+                "sort": sort,
+            }
+        )
         return self.payload, self.warning_message
 
 

@@ -17,12 +17,14 @@ except ImportError:
 
 try:
     from .trigger_word_analyzer import TriggerWordAnalyzer
+    from .remote_metadata import GenurGalleryClient
     from .remote_metadata.providers import (
         CivitaiMetadataProvider,
         CivArchiveMetadataProvider,
     )
 except ImportError:
     from trigger_word_analyzer import TriggerWordAnalyzer
+    from remote_metadata import GenurGalleryClient
     from remote_metadata.providers import (
         CivitaiMetadataProvider,
         CivArchiveMetadataProvider,
@@ -42,6 +44,7 @@ class TriggerWordMetadataRepository:
         analyzer: TriggerWordAnalyzer | None = None,
         civitai_provider: CivitaiMetadataProvider | None = None,
         civarchive_provider: CivArchiveMetadataProvider | None = None,
+        genur_client: GenurGalleryClient | None = None,
     ):
         self._analyzer = analyzer or TriggerWordAnalyzer()
         self._civitai_provider = civitai_provider or CivitaiMetadataProvider(
@@ -52,6 +55,7 @@ class TriggerWordMetadataRepository:
             cache_path=os.path.join(os.path.dirname(__file__), "civarchive_model_info_cache.json"),
             warn_handler=self._warn,
         )
+        self._genur_client = genur_client or GenurGalleryClient()
         self._huggingface_reference_catalog_cache = None
 
     def load_json_metadata(self, lora_path):
@@ -242,6 +246,10 @@ class TriggerWordMetadataRepository:
             },
             "model_id": str(model_id),
             "version_id": str(version_id) if version_id is not None else None,
+            "civitai_model_id": str(civitai_model_id) if civitai_model_id is not None else None,
+            "civitai_version_id": (
+                str(civitai_version_id) if civitai_version_id is not None else None
+            ),
             "model_name": model_name or None,
             "version_name": version_name or None,
             "url_source": "civarchive" if self._is_civarchive_url(primary_url) else "civitai",
@@ -261,29 +269,9 @@ class TriggerWordMetadataRepository:
                 if self._analyzer.string_or_empty(item)
             ]
         )
-        image_items = []
-        for image in civitai_section.get("images") or []:
-            if not isinstance(image, dict):
-                continue
-            media_type = self._normalize_media_type(image)
-            media_url = self._extract_media_url(image, media_type)
-            if not media_url:
-                continue
-            meta = image.get("meta") if isinstance(image.get("meta"), dict) else {}
-            prompt = self._analyzer.string_or_empty(meta.get("prompt"))
-            poster_url = self._extract_media_poster_url(image, media_type)
-            image_items.append(
-                {
-                    "url": media_url,
-                    "width": self._coerce_int(image.get("width")),
-                    "height": self._coerce_int(image.get("height")),
-                    "media_type": media_type,
-                    "poster_url": poster_url or None,
-                    "prompt": prompt or None,
-                }
-            )
-            if len(image_items) >= 12:
-                break
+        image_items = self._build_image_items(civitai_section.get("images") or [])
+        if not image_items:
+            image_items = self._load_genur_gallery_images(card, metadata)
 
         model_type = self._analyzer.string_or_empty(
             ((civitai_section.get("model") or {}).get("type")) or metadata.get("type")
@@ -305,6 +293,65 @@ class TriggerWordMetadataRepository:
             "download_count": self._coerce_int(stats.get("downloadCount")),
             "thumbs_up_count": self._coerce_int(stats.get("thumbsUpCount")),
         }
+
+    def _build_image_items(self, images):
+        image_items = []
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            media_type = self._normalize_media_type(image)
+            media_url = self._extract_media_url(image, media_type)
+            if not media_url:
+                continue
+            meta = image.get("meta") if isinstance(image.get("meta"), dict) else {}
+            prompt = self._analyzer.string_or_empty(meta.get("prompt") or image.get("prompt"))
+            poster_url = self._extract_media_poster_url(image, media_type)
+            image_items.append(
+                {
+                    "url": media_url,
+                    "width": self._coerce_int(image.get("width")),
+                    "height": self._coerce_int(image.get("height")),
+                    "media_type": media_type,
+                    "poster_url": poster_url or None,
+                    "prompt": prompt or None,
+                }
+            )
+            if len(image_items) >= 12:
+                break
+        return image_items
+
+    def _load_genur_gallery_images(self, card, metadata):
+        civitai_section = self._get_civitai_section(metadata) or {}
+        civitai_version_id = self._coerce_int(
+            card.get("civitai_version_id")
+            or civitai_section.get("civitai_model_version_id")
+            or metadata.get("civitai_model_version_id")
+        )
+        if civitai_version_id is None:
+            return []
+
+        nsfw_level = self._coerce_int(
+            civitai_section.get("nsfwLevel")
+            or metadata.get("nsfwLevel")
+            or ((civitai_section.get("model") or {}).get("nsfwLevel"))
+            or ((metadata.get("model") or {}).get("nsfwLevel"))
+        )
+        is_nsfw = None if nsfw_level is None else nsfw_level > 0
+
+        payload, warning_message = self._genur_client.fetch_model_gallery(
+            civitai_version_id,
+            is_nsfw=is_nsfw,
+        )
+        if payload is None:
+            if warning_message:
+                self._warn(warning_message)
+            return []
+
+        results = payload.get("results") if isinstance(payload, dict) else payload
+        if not isinstance(results, list):
+            return []
+
+        return self._build_image_items(results)
 
     def build_civitai_model_card(self, metadata):
         return self.build_model_card(metadata)
