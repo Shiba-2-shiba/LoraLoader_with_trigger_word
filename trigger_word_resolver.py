@@ -93,40 +93,49 @@ class TriggerWordResolver:
 
     def resolve_model_card_path(self, lora_path, enable_civitai_fallback):
         local_metadata = self._load_json_metadata(lora_path)
-        local_card = self._build_civitai_model_card(local_metadata)
+        local_card = self._build_model_card(local_metadata)
         if local_card:
             return self._format_model_card_result(local_card, "local metadata", local_metadata)
 
-        fallback_metadata = None
+        fallback_results = []
         if enable_civitai_fallback:
-            fallback_metadata = self._load_civitai_metadata_by_hash(lora_path)
-            fallback_card = self._build_civitai_model_card(fallback_metadata)
-            if fallback_card:
-                return self._format_model_card_result(
-                    fallback_card,
-                    "Civitai by-hash fallback/cache",
-                    fallback_metadata,
-                )
+            for fallback_label, fallback_loader in self._iter_model_card_fallback_loaders():
+                fallback_metadata = fallback_loader(lora_path)
+                fallback_results.append((fallback_label, fallback_metadata))
+                fallback_card = self._build_model_card(fallback_metadata)
+                if fallback_card:
+                    return self._format_model_card_result(
+                        fallback_card,
+                        fallback_label,
+                        fallback_metadata,
+                    )
 
         lora_name = os.path.basename(str(lora_path))
+        diagnostic_lines = [
+            f"Local metadata: {self._describe_model_card_metadata(local_metadata)}",
+        ]
         if enable_civitai_fallback:
-            display_text = (
-                f"[Browse] {lora_name}\n"
-                "Civitai model card URL を解決できませんでした。\n"
-                f"Local metadata: {self._describe_model_card_metadata(local_metadata)}\n"
-                f"By-hash fallback/cache: {self._describe_model_card_metadata(fallback_metadata)}"
-            )
+            if fallback_results:
+                diagnostic_lines.extend(
+                    f"{label}: {self._describe_model_card_metadata(metadata)}"
+                    for label, metadata in fallback_results
+                )
+            else:
+                diagnostic_lines.append("Remote fallback: no providers configured")
         else:
-            display_text = (
-                f"[Browse] {lora_name}\n"
-                "Civitai model card URL を解決できませんでした。\n"
-                f"Local metadata: {self._describe_model_card_metadata(local_metadata)}\n"
-                "By-hash fallback/cache: disabled"
-            )
+            diagnostic_lines.append("Remote fallback: disabled")
+
+        display_text = (
+            f"[Browse] {lora_name}\n"
+            "Model card URL を解決できませんでした。\n"
+            + "\n".join(diagnostic_lines)
+        )
 
         return {
             "success": False,
+            "primary_url": None,
             "civitai_url": None,
+            "civarchive_url": None,
             "model_id": None,
             "version_id": None,
             "model_name": None,
@@ -240,15 +249,19 @@ class TriggerWordResolver:
             trained_words,
             lora_path,
         ):
-            fallback = self._load_civitai_metadata_by_hash(lora_path)
-            fallback_words = self._extract_trained_words(fallback)
-            if fallback_words and self._should_prefer_fallback(
-                local_words=trained_words,
-                fallback_words=fallback_words,
-                lora_path=lora_path,
-            ):
-                trained_words = fallback_words
-                source_label = "Civitai by-hash fallback"
+            for fallback_label, fallback_loader in self._iter_remote_fallback_loaders():
+                if not self._should_attempt_fallback_for_words(trained_words, lora_path):
+                    break
+                fallback = fallback_loader(lora_path)
+                fallback_words = self._extract_trained_words(fallback)
+                if fallback_words and self._should_prefer_fallback(
+                    local_words=trained_words,
+                    fallback_words=fallback_words,
+                    lora_path=lora_path,
+                ):
+                    trained_words = fallback_words
+                    source_label = fallback_label
+                    break
 
         if not trained_words:
             filename_fallback = self._build_filename_fallback_metadata(lora_path)
@@ -305,16 +318,23 @@ class TriggerWordResolver:
             lora_path,
             require_images,
         ):
-            fallback = self._load_civitai_metadata_by_hash(lora_path)
-            if self._metadata_satisfies_request(fallback, require_images):
-                best_metadata, best_label = self._pick_better_metadata(
-                    current_metadata=best_metadata,
-                    current_label=best_label,
-                    candidate_metadata=fallback,
-                    candidate_label="Civitai by-hash fallback",
-                    lora_path=lora_path,
-                    require_images=require_images,
-                )
+            for fallback_label, fallback_loader in self._iter_remote_fallback_loaders():
+                if not self._should_attempt_fallback_for_metadata(
+                    best_metadata,
+                    lora_path,
+                    require_images,
+                ):
+                    break
+                fallback = fallback_loader(lora_path)
+                if self._metadata_satisfies_request(fallback, require_images):
+                    best_metadata, best_label = self._pick_better_metadata(
+                        current_metadata=best_metadata,
+                        current_label=best_label,
+                        candidate_metadata=fallback,
+                        candidate_label=fallback_label,
+                        lora_path=lora_path,
+                        require_images=require_images,
+                    )
 
         filename_fallback = self._build_filename_fallback_metadata(lora_path)
         if self._metadata_satisfies_request(filename_fallback, require_images):
@@ -458,17 +478,38 @@ class TriggerWordResolver:
     def _load_civitai_metadata_by_hash(self, lora_path):
         return self._metadata_repository.load_civitai_metadata_by_hash(lora_path)
 
+    def _load_civarchive_metadata_by_hash(self, lora_path):
+        return self._metadata_repository.load_civarchive_metadata_by_hash(lora_path)
+
+    def _iter_remote_fallback_loaders(self):
+        return [
+            ("Civitai by-hash fallback", self._load_civitai_metadata_by_hash),
+            ("CivArchive by-hash fallback", self._load_civarchive_metadata_by_hash),
+        ]
+
+    def _iter_model_card_fallback_loaders(self):
+        return [
+            ("CivArchive by-hash fallback/cache", self._load_civarchive_metadata_by_hash),
+            ("Civitai by-hash fallback/cache", self._load_civitai_metadata_by_hash),
+        ]
+
     def _extract_trained_words(self, metadata):
         return self._analyzer.extract_trained_words(metadata)
 
     def _normalize_civitai_payload(self, payload):
         return self._metadata_repository.normalize_civitai_payload(payload)
 
+    def _build_model_card(self, metadata):
+        return self._metadata_repository.build_model_card(metadata)
+
+    def _build_model_card_details(self, metadata):
+        return self._metadata_repository.build_model_card_details(metadata)
+
     def _build_civitai_model_card(self, metadata):
-        return self._metadata_repository.build_civitai_model_card(metadata)
+        return self._build_model_card(metadata)
 
     def _build_civitai_model_card_details(self, metadata):
-        return self._metadata_repository.build_civitai_model_card_details(metadata)
+        return self._build_model_card_details(metadata)
 
     def _calculate_sha256(self, file_path):
         return self._metadata_repository.calculate_sha256(file_path)
@@ -492,7 +533,9 @@ class TriggerWordResolver:
         if enable_civitai_fallback:
             if source_label == "Civitai by-hash fallback":
                 return " Civitai fallback を使用しました。"
-            return " Civitai fallback は有効でしたが、使えるデータを返しませんでした。"
+            if source_label == "CivArchive by-hash fallback":
+                return " CivArchive fallback を使用しました。"
+            return " Remote fallback は有効でしたが、使えるデータを返しませんでした。"
         return " Civitai fallback は無効です。"
 
     def _coerce_downstream_text(self, text):
@@ -505,6 +548,7 @@ class TriggerWordResolver:
         model_name = self._string_or_empty(card.get("model_name"))
         version_name = self._string_or_empty(card.get("version_name"))
         title = model_name or "Unknown model"
+        primary_url = self._string_or_empty(card.get("primary_url"))
         lines = [
             "[Browse]",
             title,
@@ -514,28 +558,36 @@ class TriggerWordResolver:
         ]
         if version_name:
             lines.append(f"Version Name: {version_name}")
-        lines.append(f"URL: {card.get('civitai_url')}")
+        lines.append(f"URL: {primary_url or '-'}")
 
         return {
             "success": True,
+            "primary_url": primary_url or None,
             "civitai_url": card.get("civitai_url"),
+            "civarchive_url": card.get("civarchive_url"),
+            "alternate_urls": card.get("alternate_urls") or {},
             "model_id": card.get("model_id"),
             "version_id": card.get("version_id"),
             "model_name": card.get("model_name"),
             "version_name": card.get("version_name"),
+            "url_source": card.get("url_source"),
             "source_label": source_label,
             "display_text": "\n".join(lines),
-            "card_data": self._build_civitai_model_card_details(metadata) if metadata else None,
+            "card_data": self._build_model_card_details(metadata) if metadata else None,
         }
 
     def _describe_model_card_metadata(self, metadata):
         if not metadata:
             return "not found"
 
-        card = self._build_civitai_model_card(metadata)
+        card = self._build_model_card(metadata)
         if card:
             version_id = card.get("version_id") or "-"
-            return f"resolved modelId={card.get('model_id')}, versionId={version_id}"
+            url_source = card.get("url_source") or "unknown"
+            return (
+                f"resolved modelId={card.get('model_id')}, "
+                f"versionId={version_id}, urlSource={url_source}"
+            )
 
         civitai_section = self._get_civitai_section(metadata)
         if civitai_section:
@@ -559,3 +611,4 @@ class TriggerWordResolver:
 
 
 __all__ = ["SAFETENSORS_AVAILABLE", "TriggerWordResolver"]
+
