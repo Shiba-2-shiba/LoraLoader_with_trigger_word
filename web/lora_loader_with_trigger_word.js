@@ -5,6 +5,22 @@ const PREVIEW_ROUTE = "/lora_loader_with_trigger_word/preview";
 const BROWSE_ROUTE = "/lora_loader_with_trigger_word/browse";
 const VIEWER_ID = "lltwt-model-card-viewer";
 const VIEWER_STYLE_ID = "lltwt-model-card-viewer-style";
+const DEFAULT_TRIGGER_WORD_SOURCE = "metadata";
+const ENABLE_REMOTE_METADATA_FALLBACK = true;
+
+function localizeSourceLabel(sourceLabel) {
+    const mapping = {
+        "local metadata": "ローカル metadata",
+        "embedded metadata": "埋め込み metadata",
+        "filename fallback": "ファイル名 fallback",
+        "Bundled Hugging Face reference metadata": "同梱 Hugging Face 参照 metadata",
+        "Civitai by-hash fallback": "Civitai by-hash fallback",
+        "CivArchive by-hash fallback": "CivArchive by-hash fallback",
+        "CivArchive by-hash fallback/cache": "CivArchive by-hash fallback/cache",
+        "Civitai by-hash fallback/cache": "Civitai by-hash fallback/cache",
+    };
+    return mapping[sourceLabel] || sourceLabel || "";
+}
 
 function injectViewerCss() {
     if (document.getElementById(VIEWER_STYLE_ID)) {
@@ -291,40 +307,40 @@ function ensureViewer() {
         root = document.createElement("div");
         root.id = VIEWER_ID;
         root.className = "hidden";
-        root.innerHTML = `
+                        root.innerHTML = `
             <div class="lltwt-backdrop"></div>
             <div class="lltwt-window">
                 <div class="lltwt-header">
                     <div class="lltwt-header-copy">
-                        <span class="lltwt-eyebrow">LoRA Model Card Viewer</span>
-                        <h2 class="lltwt-title">Model Card</h2>
+                        <span class="lltwt-eyebrow">LoRA モデルカード</span>
+                        <h2 class="lltwt-title">モデルカード</h2>
                         <p class="lltwt-subtitle">ComfyUI 内でモデル metadata を閲覧します。</p>
                     </div>
                     <div class="lltwt-header-actions">
-                        <button class="lltwt-btn" data-action="copy-url" type="button">Copy URL</button>
-                        <button class="lltwt-close" data-action="close" type="button" aria-label="Close">x</button>
+                        <button class="lltwt-btn" data-action="copy-url" type="button">URL をコピー</button>
+                        <button class="lltwt-close" data-action="close" type="button" aria-label="閉じる">x</button>
                     </div>
                 </div>
                 <div class="lltwt-body">
                     <div class="lltwt-sidebar">
                         <section class="lltwt-panel lltwt-section">
-                            <h3>Overview</h3>
+                            <h3>概要</h3>
                             <div class="lltwt-metrics" data-slot="metrics"></div>
                         </section>
                         <section class="lltwt-panel lltwt-section">
-                            <h3>Trigger Words</h3>
+                            <h3>トリガーワード</h3>
                             <div class="lltwt-chip-list" data-slot="trained-words"></div>
                             <div class="lltwt-empty hidden" data-slot="trained-words-empty">trainedWords は見つかりませんでした。</div>
                         </section>
                     </div>
                     <div class="lltwt-main">
                         <section class="lltwt-panel lltwt-section">
-                            <h3>Description</h3>
+                            <h3>説明</h3>
                             <div class="lltwt-description" data-slot="description"></div>
                             <div class="lltwt-empty hidden" data-slot="description-empty">説明文はありません。</div>
                         </section>
                         <section class="lltwt-panel lltwt-section">
-                            <h3>Preview Images</h3>
+                            <h3>プレビュー画像</h3>
                             <div class="lltwt-gallery" data-slot="images"></div>
                             <div class="lltwt-empty hidden" data-slot="images-empty">プレビュー画像はありません。</div>
                         </section>
@@ -423,26 +439,26 @@ function openViewer(cardData) {
     const imagesEmpty = root.querySelector('[data-slot="images-empty"]');
 
     if (title) {
-        title.textContent = cardData.model_name || "Unknown model";
+        title.textContent = cardData.model_name || "不明なモデル";
     }
     if (subtitle) {
         subtitle.textContent = [
-            cardData.version_name || "Version name unavailable",
-            cardData.source_label ? `Source: ${cardData.source_label}` : null,
+            cardData.version_name || "バージョン名なし",
+            cardData.source_label ? `取得元: ${localizeSourceLabel(cardData.source_label)}` : null,
         ].filter(Boolean).join(" | ");
     }
 
     if (metrics) {
         metrics.replaceChildren(
-            createMetric("Model ID", cardData.model_id),
-            createMetric("Version ID", cardData.version_id),
-            createMetric("Model Type", cardData.model_type),
-            createMetric("Base Model", cardData.base_model),
+            createMetric("モデル ID", cardData.model_id),
+            createMetric("バージョン ID", cardData.version_id),
+            createMetric("モデル種別", cardData.model_type),
+            createMetric("ベースモデル", cardData.base_model),
             createMetric(
-                "Stats",
+                "統計",
                 [
-                    Number.isInteger(cardData.download_count) ? `Downloads ${cardData.download_count}` : null,
-                    Number.isInteger(cardData.thumbs_up_count) ? `Likes ${cardData.thumbs_up_count}` : null,
+                    Number.isInteger(cardData.download_count) ? `DL ${cardData.download_count}` : null,
+                    Number.isInteger(cardData.thumbs_up_count) ? `いいね ${cardData.thumbs_up_count}` : null,
                 ].filter(Boolean).join(" | ")
             ),
             createMetric("URL", cardData.primary_url || cardData.civitai_url)
@@ -504,7 +520,7 @@ function openViewer(cardData) {
             meta.className = "lltwt-card-meta";
             meta.textContent = [image.width, image.height].every(Number.isFinite)
                 ? `${image.width} x ${image.height}`
-                : "Preview image";
+                : "プレビュー画像";
 
             copy.appendChild(meta);
             if (image.prompt) {
@@ -538,11 +554,9 @@ app.registerExtension({
             const result = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
 
             const loraWidget = this.widgets?.find((widget) => widget.name === "lora_name");
-            const sourceWidget = this.widgets?.find((widget) => widget.name === "trigger_word_source");
-            const fallbackWidget = this.widgets?.find((widget) => widget.name === "enable_civitai_fallback");
             const previewWidget = this.widgets?.find((widget) => widget.name === "loaded_trigger_words");
 
-            if (!loraWidget || !sourceWidget || !fallbackWidget || !previewWidget) {
+            if (!loraWidget || !previewWidget) {
                 return result;
             }
 
@@ -567,8 +581,8 @@ app.registerExtension({
             const syncButtonLabels = () => {
                 if (browseModelCardButton) {
                     browseModelCardButton.name = state.modelCardData
-                        ? "Browse Model Card"
-                        : "Browse Model Card (Load First)";
+                        ? "モデルカード表示"
+                        : "モデルカード表示（先に読込）";
                 }
             };
 
@@ -583,8 +597,8 @@ app.registerExtension({
 
             const getRequestPayload = () => ({
                 lora_name: loraWidget.value,
-                trigger_word_source: sourceWidget.value,
-                enable_civitai_fallback: Boolean(fallbackWidget.value),
+                trigger_word_source: DEFAULT_TRIGGER_WORD_SOURCE,
+                enable_civitai_fallback: ENABLE_REMOTE_METADATA_FALLBACK,
             });
 
             const ensureLoraSelected = (prefix) => {
@@ -690,7 +704,7 @@ app.registerExtension({
 
             this.addWidget(
                 "button",
-                "Load Trigger Words",
+                "トリガーワード読込",
                 "",
                 loadTriggerWords,
                 { serialize: false }
@@ -698,7 +712,7 @@ app.registerExtension({
 
             this.addWidget(
                 "button",
-                "Load Model Card",
+                "モデルカード読込",
                 "",
                 () => loadModelCard(),
                 { serialize: false }
@@ -706,7 +720,7 @@ app.registerExtension({
 
             browseModelCardButton = this.addWidget(
                 "button",
-                "Browse Model Card (Load First)",
+                "モデルカード表示（先に読込）",
                 "",
                 browseModelCard,
                 { serialize: false }

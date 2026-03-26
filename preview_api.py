@@ -3,7 +3,13 @@
 import server
 from aiohttp import web
 
-from .constants import BROWSE_ROUTE, PREVIEW_PREFIX, PREVIEW_ROUTE
+from .constants import (
+    BROWSE_ROUTE,
+    DEFAULT_TRIGGER_WORD_SOURCE,
+    ENABLE_REMOTE_METADATA_FALLBACK,
+    PREVIEW_PREFIX,
+    PREVIEW_ROUTE,
+)
 from .services import trigger_word_resolver
 
 
@@ -19,8 +25,8 @@ async def preview_trigger_words(request):
     try:
         payload = await request.json()
         lora_name = payload.get("lora_name", "")
-        trigger_word_source = payload.get("trigger_word_source", "json_combined")
-        enable_civitai_fallback = bool(payload.get("enable_civitai_fallback", False))
+        trigger_word_source = DEFAULT_TRIGGER_WORD_SOURCE
+        enable_civitai_fallback = ENABLE_REMOTE_METADATA_FALLBACK
 
         if not lora_name:
             return web.json_response(
@@ -61,7 +67,7 @@ async def browse_model_card(request):
     try:
         payload = await request.json()
         lora_name = payload.get("lora_name", "")
-        enable_civitai_fallback = bool(payload.get("enable_civitai_fallback", False))
+        enable_civitai_fallback = ENABLE_REMOTE_METADATA_FALLBACK
 
         if not lora_name:
             return web.json_response(

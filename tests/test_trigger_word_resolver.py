@@ -219,6 +219,129 @@ class TriggerWordResolverTests(unittest.TestCase):
 
         self.assertEqual(result, "hero tag")
 
+    def test_json_combined_reports_no_trigger_needed_for_style_model_with_empty_trained_words(self):
+        metadata = {
+            "civitai": {
+                "trainedWords": [],
+                "model": {
+                    "name": "Watercolor Style",
+                    "tags": ["style"],
+                },
+            }
+        }
+
+        with patch.object(
+            self.resolver,
+            "_get_metadata_with_optional_fallback",
+            return_value=(metadata, "Civitai by-hash fallback"),
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\watercolor_style.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=True,
+            )
+            downstream = self.resolver.resolve_output_path(
+                lora_path=r"C:\tmp\watercolor_style.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertIn("明示トリガーワード不要モデル", result)
+        self.assertEqual(downstream, "")
+
+    def test_metadata_reports_no_trigger_needed_for_style_placeholder(self):
+        with patch.object(
+            self.resolver,
+            "_load_embedded_metadata",
+            return_value={"civitai": {"trainedWords": [self.resolver.STYLE_PLACEHOLDER]}},
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\stylistic_pack.safetensors",
+                trigger_word_source="metadata",
+                enable_civitai_fallback=False,
+            )
+
+        self.assertIn("明示トリガーワード不要モデル", result)
+        self.assertNotIn(self.resolver.STYLE_PLACEHOLDER, result)
+
+    def test_metadata_does_not_use_filename_fallback_for_empty_slider_metadata(self):
+        with (
+            patch.object(self.resolver, "_load_embedded_metadata", return_value=None),
+            patch.object(
+                self.resolver,
+                "_load_civitai_metadata_by_hash",
+                return_value={
+                    "civitai": {
+                        "trainedWords": [],
+                        "model": {
+                            "name": "Contrast Slider",
+                            "tags": ["slider"],
+                        },
+                    }
+                },
+            ),
+            patch.object(self.resolver, "_load_civarchive_metadata_by_hash", return_value=None),
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\contrast-slider_v1.safetensors",
+                trigger_word_source="metadata",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertIn("明示トリガーワード不要モデル", result)
+        self.assertNotIn("contrast slider", result.lower())
+
+    def test_json_combined_reports_no_trigger_needed_for_detail_model_with_name_derived_words(self):
+        metadata = {
+            "_embedded_raw_metadata": {
+                "modelspec.description": "Available on Civitai - https://civitai.com/user/example",
+            },
+            "civitai": {
+                "trainedWords": ["addmicrodetails"],
+            },
+            "model_name": "AddMicroDetails_Illustrious",
+        }
+
+        with patch.object(
+            self.resolver,
+            "_get_metadata_with_optional_fallback",
+            return_value=(metadata, "embedded metadata"),
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\AddMicroDetails_Illustrious_v5.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=False,
+            )
+            downstream = self.resolver.resolve_output_path(
+                lora_path=r"C:\tmp\AddMicroDetails_Illustrious_v5.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=False,
+        )
+
+        self.assertIn("明示トリガーワード不要モデル", result)
+        self.assertEqual(downstream, "")
+
+    def test_metadata_uses_bundled_huggingface_reference_before_remote_fallback(self):
+        with (
+            patch.object(self.resolver, "_load_embedded_metadata", return_value=None),
+            patch.object(
+                self.resolver,
+                "_load_huggingface_reference_metadata",
+                return_value={"civitai": {"trainedWords": ["69,ass focus"]}},
+            ),
+            patch.object(self.resolver, "_load_civitai_metadata_by_hash") as civitai_loader,
+            patch.object(self.resolver, "_load_civarchive_metadata_by_hash") as civarchive_loader,
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\69_ass_focus_v1_Illustrious.safetensors",
+                trigger_word_source="metadata",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertEqual(result, "69,ass focus")
+        civitai_loader.assert_not_called()
+        civarchive_loader.assert_not_called()
+
     def test_resolve_output_path_returns_empty_string_for_failure_message(self):
         with patch.object(
             self.resolver,
@@ -396,6 +519,7 @@ class TriggerWordResolverTests(unittest.TestCase):
     def test_model_card_failure_returns_provider_neutral_contract(self):
         with (
             patch.object(self.resolver, "_load_json_metadata", return_value=None),
+            patch.object(self.resolver, "_load_huggingface_reference_metadata", return_value=None),
             patch.object(self.resolver, "_load_civarchive_metadata_by_hash", return_value=None),
             patch.object(self.resolver, "_load_civitai_metadata_by_hash", return_value=None),
         ):
@@ -409,8 +533,35 @@ class TriggerWordResolverTests(unittest.TestCase):
         self.assertIsNone(result["civitai_url"])
         self.assertIsNone(result["civarchive_url"])
         self.assertIn("Model card URL を解決できませんでした。", result["display_text"])
-        self.assertIn("CivArchive by-hash fallback/cache: not found", result["display_text"])
-        self.assertIn("Civitai by-hash fallback/cache: not found", result["display_text"])
+        self.assertIn("同梱 Hugging Face 参照 metadata: 見つかりませんでした", result["display_text"])
+        self.assertIn("CivArchive by-hash fallback/cache: 見つかりませんでした", result["display_text"])
+        self.assertIn("Civitai by-hash fallback/cache: 見つかりませんでした", result["display_text"])
+
+    def test_model_card_failure_reports_huggingface_reference_trigger_words(self):
+        with (
+            patch.object(self.resolver, "_load_json_metadata", return_value=None),
+            patch.object(
+                self.resolver,
+                "_load_huggingface_reference_metadata",
+                return_value={
+                    "civitai": {"trainedWords": ["69,ass focus"]},
+                    "_huggingface_reference": {
+                        "source": "https://huggingface.co/example",
+                        "model_key": "69_ass_focus_v1_Illustrious",
+                    },
+                },
+            ),
+            patch.object(self.resolver, "_load_civarchive_metadata_by_hash", return_value=None),
+            patch.object(self.resolver, "_load_civitai_metadata_by_hash", return_value=None),
+        ):
+            result = self.resolver.resolve_model_card_path(
+                lora_path=r"C:\tmp\69_ass_focus_v1_Illustrious.safetensors",
+                enable_civitai_fallback=True,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("同梱参照エントリとして認識済み", result["display_text"])
+        self.assertIn("69,ass focus", result["display_text"])
 
 
 class TriggerWordMetadataRepositoryTests(unittest.TestCase):
@@ -455,6 +606,74 @@ class TriggerWordMetadataRepositoryTests(unittest.TestCase):
             card["civitai_url"],
             "https://civitai.com/models/123?modelVersionId=456",
         )
+
+    def test_load_huggingface_reference_metadata_matches_embedded_title(self):
+        with (
+            patch.object(
+                self.repository,
+                "_read_safetensors_metadata",
+                return_value={
+                    "ss_output_name": "69_ass_focus_v1_Illustrious",
+                    "modelspec.title": "69_ass_focus_v1_Illustrious",
+                },
+            ),
+            patch.object(
+                self.repository,
+                "_load_huggingface_reference_catalog",
+                return_value=[
+                    {
+                        "source": "https://huggingface.co/example",
+                        "model_key": "69_ass_focus_v1_Illustrious",
+                        "aliases": ["69_ass_focus_v1_Illustrious"],
+                        "sd_version": "SDXL",
+                        "activation_text": "69,ass focus",
+                        "description": "sample",
+                        "text_body": "sample text",
+                    }
+                ],
+            ),
+        ):
+            result = self.repository.load_huggingface_reference_metadata(
+                r"C:\tmp\renamed_model.safetensors"
+            )
+
+        self.assertEqual(result["civitai"]["trainedWords"], ["69,ass focus"])
+        self.assertEqual(result["model_name"], "69_ass_focus_v1_Illustrious")
+        self.assertEqual(
+            result["_huggingface_reference"]["source"],
+            "https://huggingface.co/example",
+        )
+
+    def test_load_embedded_metadata_ignores_reference_description_urls(self):
+        with patch.object(
+            self.repository,
+            "_read_safetensors_metadata",
+            return_value={
+                "modelspec.description": "Available on Civitai - https://civitai.com/user/example",
+                "ss_output_name": "AddMicroDetails_Illustrious",
+                "ss_tag_frequency": json.dumps(
+                    {
+                        "4_addmicrodetails clothes": {
+                            "addmicrodetails": 50,
+                            "solo": 23,
+                        }
+                    }
+                ),
+                "ss_dataset_dirs": json.dumps(
+                    {
+                        "4_addmicrodetails clothes": {
+                            "img_count": 50,
+                        }
+                    }
+                ),
+                "ss_num_train_images": "50",
+            },
+        ):
+            result = self.repository.load_embedded_metadata(
+                r"C:\tmp\AddMicroDetails_Illustrious_v5.safetensors"
+            )
+
+        self.assertEqual(result["civitai"]["trainedWords"], ["addmicrodetails"])
 
     def test_build_civitai_model_card_details_sanitizes_description_and_images(self):
         details = self.repository.build_civitai_model_card_details(
@@ -554,6 +773,67 @@ class TriggerWordMetadataRepositoryTests(unittest.TestCase):
             "https://vid.genur.art/unsafe/450x0/example",
         )
 
+    def test_build_model_card_details_uses_genur_gallery_fallback_when_images_missing(self):
+        repository = TriggerWordMetadataRepository(
+            genur_client=DummyGenurGalleryClient(
+                payload={
+                    "results": [
+                        {
+                            "id": 120918894,
+                            "type": "image",
+                            "url": "https://img.genur.art/example-1.webp",
+                            "prompt": "sample gallery prompt",
+                            "width": 832,
+                            "height": 1216,
+                        },
+                        {
+                            "id": 120918895,
+                            "type": "video",
+                            "video_url": "https://c.genur.art/example-video",
+                            "image_url": "https://vid.genur.art/example-poster.webp",
+                            "prompt": "sample gallery video",
+                        },
+                    ]
+                }
+            )
+        )
+
+        details = repository.build_model_card_details(
+            {
+                "civitai": {
+                    "id": 2685238,
+                    "modelId": 2385403,
+                    "civitai_model_id": 2385403,
+                    "civitai_model_version_id": 2685238,
+                    "name": "AnimaP_NP43iV2",
+                    "model": {"name": "Example Gallery LoRA", "type": "LORA"},
+                    "images": [],
+                    "nsfwLevel": 31,
+                }
+            }
+        )
+
+        self.assertIsNotNone(details)
+        self.assertEqual(details["civitai_version_id"], "2685238")
+        self.assertEqual(details["images"][0]["url"], "https://img.genur.art/example-1.webp")
+        self.assertEqual(details["images"][0]["prompt"], "sample gallery prompt")
+        self.assertEqual(details["images"][1]["media_type"], "video")
+        self.assertEqual(details["images"][1]["url"], "https://c.genur.art/example-video")
+        self.assertEqual(
+            details["images"][1]["poster_url"],
+            "https://vid.genur.art/example-poster.webp",
+        )
+        self.assertEqual(
+            repository._genur_client.calls,
+            [
+                {
+                    "model_version_id": 2685238,
+                    "is_nsfw": True,
+                    "sort": "top",
+                }
+            ],
+        )
+
 
 class DummyCivitaiClient:
     def __init__(self, payload=None, warning_message=None):
@@ -563,6 +843,23 @@ class DummyCivitaiClient:
 
     def fetch_model_version_by_hash(self, sha256_hash):
         self.calls.append(sha256_hash)
+        return self.payload, self.warning_message
+
+
+class DummyGenurGalleryClient:
+    def __init__(self, payload=None, warning_message=None):
+        self.payload = payload
+        self.warning_message = warning_message
+        self.calls = []
+
+    def fetch_model_gallery(self, model_version_id, *, is_nsfw=None, sort="top"):
+        self.calls.append(
+            {
+                "model_version_id": model_version_id,
+                "is_nsfw": is_nsfw,
+                "sort": sort,
+            }
+        )
         return self.payload, self.warning_message
 
 
