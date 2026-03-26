@@ -264,6 +264,72 @@ class TriggerWordResolverTests(unittest.TestCase):
         self.assertIn("明示トリガーワード不要モデル", result)
         self.assertNotIn(self.resolver.STYLE_PLACEHOLDER, result)
 
+    def test_json_combined_keeps_description_trigger_for_style_tagged_model(self):
+        metadata = {
+            "_embedded_raw_metadata": {
+                "modelspec.description": "Trigger word: @h4z3",
+            },
+            "civitai": {
+                "trainedWords": ["@h4z3"],
+                "model": {
+                    "name": "HAZE Style - Anima P",
+                    "tags": ["style"],
+                },
+            },
+        }
+
+        with patch.object(
+            self.resolver,
+            "_get_metadata_with_optional_fallback",
+            return_value=(metadata, "embedded metadata"),
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\haze_AnimaP_v01.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=False,
+            )
+            downstream = self.resolver.resolve_output_path(
+                lora_path=r"C:\tmp\haze_AnimaP_v01.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=False,
+            )
+
+        self.assertEqual(result, "@h4z3")
+        self.assertEqual(downstream, "@h4z3")
+
+    def test_json_combined_keeps_tag_frequency_trigger_for_style_tagged_model(self):
+        metadata = {
+            "_embedded_raw_metadata": {
+                "ss_tag_frequency": '{"1_HAZE": {"@h4z3": 33}}',
+            },
+            "civitai": {
+                "trainedWords": ["@h4z3"],
+                "model": {
+                    "name": "HAZE Style - Anima P",
+                    "tags": ["style"],
+                },
+            },
+        }
+
+        with patch.object(
+            self.resolver,
+            "_get_metadata_with_optional_fallback",
+            return_value=(metadata, "embedded metadata"),
+        ):
+            result = self.resolver.resolve_path(
+                lora_path=r"C:\tmp\haze_AnimaP_v01.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=False,
+            )
+            downstream = self.resolver.resolve_output_path(
+                lora_path=r"C:\tmp\haze_AnimaP_v01.safetensors",
+                trigger_word_source="json_combined",
+                enable_civitai_fallback=False,
+            )
+
+        self.assertEqual(result, "@h4z3")
+        self.assertEqual(downstream, "@h4z3")
+
     def test_metadata_does_not_use_filename_fallback_for_empty_slider_metadata(self):
         with (
             patch.object(self.resolver, "_load_embedded_metadata", return_value=None),
