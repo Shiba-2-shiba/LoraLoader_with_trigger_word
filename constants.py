@@ -1,7 +1,13 @@
 """Shared constants for the LoRA loader custom node package."""
 
-NODE_ID = "LoraLoaderModelOnlyTriggerWords"
-NODE_DISPLAY_NAME = "Load LoRA + Trigger Words (Model Only)"
+MODEL_ONLY_NODE_ID = "LoraLoaderModelOnlyTriggerWords"
+MODEL_ONLY_NODE_DISPLAY_NAME = "Load LoRA + Trigger Words (Model Only)"
+NODE_ID = MODEL_ONLY_NODE_ID
+NODE_DISPLAY_NAME = MODEL_ONLY_NODE_DISPLAY_NAME
+
+MODEL_AND_CLIP_NODE_ID = "LoraLoaderTriggerWords"
+MODEL_AND_CLIP_NODE_DISPLAY_NAME = "Load LoRA + Trigger Words"
+
 NODE_CATEGORY = "loaders/lora"
 
 PREVIEW_ROUTE = "/lora_loader_with_trigger_word/preview"

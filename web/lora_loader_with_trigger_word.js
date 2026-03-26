@@ -5,7 +5,10 @@ const PREVIEW_ROUTE = "/lora_loader_with_trigger_word/preview";
 const BROWSE_ROUTE = "/lora_loader_with_trigger_word/browse";
 const VIEWER_ID = "lltwt-model-card-viewer";
 const VIEWER_STYLE_ID = "lltwt-model-card-viewer-style";
-const NODE_TYPE = "LoraLoaderModelOnlyTriggerWords";
+const MANAGED_NODE_TYPES = new Set([
+    "LoraLoaderTriggerWords",
+    "LoraLoaderModelOnlyTriggerWords",
+]);
 const DEFAULT_PANEL_MESSAGE =
     "[LoRA Trigger Words] Load Trigger Words を押して内容を確認してください。";
 const DEFAULT_TRIGGER_WORD_SOURCE = "metadata";
@@ -423,22 +426,39 @@ function isVideoMedia(image) {
     return [".mp4", ".webm", ".mov", ".m4v"].some((ext) => url.includes(ext));
 }
 
+function isManagedNodeType(nodeType) {
+    return MANAGED_NODE_TYPES.has(nodeType);
+}
+
 function getManagedNodes() {
     const graph = app.graph;
     if (!graph) {
         return [];
     }
 
-    const matchedNodes = typeof graph.findNodesByType === "function"
-        ? graph.findNodesByType(NODE_TYPE)
-        : null;
-    if (Array.isArray(matchedNodes) && matchedNodes.length > 0) {
-        return matchedNodes;
+    if (typeof graph.findNodesByType === "function") {
+        const nodes = [];
+        const seen = new Set();
+        for (const nodeType of MANAGED_NODE_TYPES) {
+            const matchedNodes = graph.findNodesByType(nodeType);
+            if (!Array.isArray(matchedNodes)) {
+                continue;
+            }
+            for (const node of matchedNodes) {
+                if (node && !seen.has(node.id)) {
+                    seen.add(node.id);
+                    nodes.push(node);
+                }
+            }
+        }
+        if (nodes.length > 0) {
+            return nodes;
+        }
     }
 
     const allNodes = Array.isArray(graph._nodes) ? graph._nodes : [];
     return allNodes.filter((node) =>
-        [node?.comfyClass, node?.constructor?.comfyClass, node?.type].includes(NODE_TYPE)
+        [node?.comfyClass, node?.constructor?.comfyClass, node?.type].some(isManagedNodeType)
     );
 }
 
@@ -610,7 +630,7 @@ app.registerExtension({
     },
 
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== NODE_TYPE) {
+        if (!isManagedNodeType(nodeData.name)) {
             return;
         }
 
