@@ -5,6 +5,9 @@ const PREVIEW_ROUTE = "/lora_loader_with_trigger_word/preview";
 const BROWSE_ROUTE = "/lora_loader_with_trigger_word/browse";
 const VIEWER_ID = "lltwt-model-card-viewer";
 const VIEWER_STYLE_ID = "lltwt-model-card-viewer-style";
+const NODE_TYPE = "LoraLoaderModelOnlyTriggerWords";
+const DEFAULT_PANEL_MESSAGE =
+    "[LoRA Trigger Words] Load Trigger Words を押して内容を確認してください。";
 const DEFAULT_TRIGGER_WORD_SOURCE = "metadata";
 const ENABLE_REMOTE_METADATA_FALLBACK = true;
 
@@ -420,6 +423,46 @@ function isVideoMedia(image) {
     return [".mp4", ".webm", ".mov", ".m4v"].some((ext) => url.includes(ext));
 }
 
+function getManagedNodes() {
+    const graph = app.graph;
+    if (!graph) {
+        return [];
+    }
+
+    const matchedNodes = typeof graph.findNodesByType === "function"
+        ? graph.findNodesByType(NODE_TYPE)
+        : null;
+    if (Array.isArray(matchedNodes) && matchedNodes.length > 0) {
+        return matchedNodes;
+    }
+
+    const allNodes = Array.isArray(graph._nodes) ? graph._nodes : [];
+    return allNodes.filter((node) =>
+        [node?.comfyClass, node?.constructor?.comfyClass, node?.type].includes(NODE_TYPE)
+    );
+}
+
+async function primeTriggerWordsForQueue() {
+    const nodes = getManagedNodes();
+    if (!nodes.length) {
+        return;
+    }
+
+    await Promise.all(nodes.map(async (node) => {
+        if (typeof node?.__lltwtEnsureTriggerWordsLoaded !== "function") {
+            return;
+        }
+        try {
+            await node.__lltwtEnsureTriggerWordsLoaded({
+                force: false,
+                reason: "queue",
+            });
+        } catch (error) {
+            console.warn("[LoRA Trigger Words] Queue 前の trigger words 読込に失敗しました。", error);
+        }
+    }));
+}
+
 function openViewer(cardData) {
     if (!cardData) {
         return;
@@ -495,14 +538,24 @@ function openViewer(cardData) {
                 const video = document.createElement("video");
                 video.className = "lltwt-card-media";
                 video.src = image.url;
+                video.autoplay = true;
                 video.controls = true;
                 video.muted = true;
+                video.defaultMuted = true;
                 video.loop = true;
                 video.playsInline = true;
                 video.preload = "metadata";
                 if (image.poster_url) {
                     video.poster = image.poster_url;
                 }
+                video.addEventListener("loadeddata", () => {
+                    const playPromise = video.play();
+                    if (typeof playPromise?.catch === "function") {
+                        playPromise.catch(() => {
+                            // Ignore autoplay failures in embedded browsers.
+                        });
+                    }
+                }, { once: true });
                 media = video;
             } else {
                 const img = document.createElement("img");
@@ -543,8 +596,21 @@ function openViewer(cardData) {
 app.registerExtension({
     name: "LoraLoaderWithTriggerWord.UI",
 
+    async setup() {
+        if (app.__lltwtQueuePromptWrapped || typeof app.queuePrompt !== "function") {
+            return;
+        }
+
+        const originalQueuePrompt = app.queuePrompt.bind(app);
+        app.queuePrompt = async (...args) => {
+            await primeTriggerWordsForQueue();
+            return await originalQueuePrompt(...args);
+        };
+        app.__lltwtQueuePromptWrapped = true;
+    },
+
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== "LoraLoaderModelOnlyTriggerWords") {
+        if (nodeData.name !== NODE_TYPE) {
             return;
         }
 
@@ -561,14 +627,17 @@ app.registerExtension({
             }
 
             const state = (this.__lltwtState ??= {
-                lastPanelText:
-                    previewWidget.value ??
-                    "[LoRA Trigger Words] Load Trigger Words を押して内容を確認してください。",
+                currentLoraName: String(loraWidget.value ?? "").trim(),
+                lastPanelText: previewWidget.value ?? DEFAULT_PANEL_MESSAGE,
                 modelCardUrl: "",
                 modelCardData: null,
+                loadedTriggerWordsLoraName: "",
+                loadedModelCardLoraName: "",
+                pendingTriggerWordsLoad: null,
             });
 
             let browseModelCardButton;
+            const originalLoraWidgetCallback = loraWidget.callback;
 
             const setPanelValue = (value) => {
                 previewWidget.value = value ?? "";
@@ -586,17 +655,42 @@ app.registerExtension({
                 }
             };
 
+            const getSelectedLoraName = () => String(loraWidget.value ?? "").trim();
+
+            const resetNodeStateForLoraChange = () => {
+                state.loadedTriggerWordsLoraName = "";
+                state.loadedModelCardLoraName = "";
+                state.modelCardUrl = "";
+                state.modelCardData = null;
+            };
+
+            const syncSelectedLoraState = ({ resetPanel = false } = {}) => {
+                const selectedLoraName = getSelectedLoraName();
+                if (selectedLoraName === state.currentLoraName) {
+                    return selectedLoraName;
+                }
+
+                state.currentLoraName = selectedLoraName;
+                resetNodeStateForLoraChange();
+                if (resetPanel) {
+                    renderPanel(DEFAULT_PANEL_MESSAGE);
+                } else {
+                    syncButtonLabels();
+                }
+                return selectedLoraName;
+            };
+
             const renderPanel = (text) => {
                 state.lastPanelText = text || state.lastPanelText;
                 syncButtonLabels();
                 setPanelValue(
                     state.lastPanelText ||
-                        "[LoRA Trigger Words] Load Trigger Words を押して内容を確認してください。"
+                        DEFAULT_PANEL_MESSAGE
                 );
             };
 
             const getRequestPayload = () => ({
-                lora_name: loraWidget.value,
+                lora_name: getSelectedLoraName(),
                 trigger_word_source: DEFAULT_TRIGGER_WORD_SOURCE,
                 enable_civitai_fallback: ENABLE_REMOTE_METADATA_FALLBACK,
             });
@@ -618,32 +712,71 @@ app.registerExtension({
                 }
             };
 
-            const loadTriggerWords = async () => {
+            const requestTriggerWords = async () => {
+                const response = await api.fetchApi(PREVIEW_ROUTE, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify(getRequestPayload()),
+                });
+                const data = await readJsonResponse(response);
+                return { response, data };
+            };
+
+            const loadTriggerWords = async ({ force = true } = {}) => {
+                const selectedLoraName = syncSelectedLoraState({ resetPanel: false });
                 if (!ensureLoraSelected("[LoRA Trigger Words]")) {
-                    return;
+                    return "";
+                }
+
+                const hasLoadedCurrentLora =
+                    !force &&
+                    state.loadedTriggerWordsLoraName === selectedLoraName &&
+                    String(previewWidget.value ?? "").trim();
+                if (hasLoadedCurrentLora) {
+                    return String(previewWidget.value ?? "");
+                }
+
+                if (state.pendingTriggerWordsLoad) {
+                    return await state.pendingTriggerWordsLoad;
                 }
 
                 renderPanel("[LoRA Trigger Words] 読み込み中...");
 
-                try {
-                    const response = await api.fetchApi(PREVIEW_ROUTE, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify(getRequestPayload()),
-                    });
-                    const data = await readJsonResponse(response);
-                    renderPanel(
-                        data.trigger_words ||
-                        `[LoRA Trigger Words] preview API 応答が空です。HTTP ${response.status}`
-                    );
-                } catch (error) {
-                    renderPanel(`[LoRA Trigger Words] preview 取得エラー: ${error}`);
-                }
+                state.pendingTriggerWordsLoad = (async () => {
+                    try {
+                        const { response, data } = await requestTriggerWords();
+                        const panelText =
+                            data.trigger_words ||
+                            `[LoRA Trigger Words] preview API 応答が空です。HTTP ${response.status}`;
+                        const isCurrentSelection = getSelectedLoraName() === selectedLoraName;
+                        if (data.success && isCurrentSelection) {
+                            state.loadedTriggerWordsLoraName = selectedLoraName;
+                        } else {
+                            state.loadedTriggerWordsLoraName = "";
+                        }
+                        if (isCurrentSelection) {
+                            renderPanel(panelText);
+                        }
+                        return panelText;
+                    } catch (error) {
+                        state.loadedTriggerWordsLoraName = "";
+                        const panelText = `[LoRA Trigger Words] preview 取得エラー: ${error}`;
+                        if (getSelectedLoraName() === selectedLoraName) {
+                            renderPanel(panelText);
+                        }
+                        return panelText;
+                    } finally {
+                        state.pendingTriggerWordsLoad = null;
+                    }
+                })();
+
+                return await state.pendingTriggerWordsLoad;
             };
 
             const loadModelCard = async ({ openViewerAfterLoad = false } = {}) => {
+                const selectedLoraName = syncSelectedLoraState({ resetPanel: false });
                 if (!ensureLoraSelected("[Browse]")) {
                     return false;
                 }
@@ -659,21 +792,29 @@ app.registerExtension({
                         body: JSON.stringify(getRequestPayload()),
                     });
                     const data = await readJsonResponse(response);
-                    state.modelCardUrl = data.primary_url || data.civitai_url || "";
-                    state.modelCardData = data.card_data
+                    const isCurrentSelection = getSelectedLoraName() === selectedLoraName;
+                    const modelCardData = data.card_data
                         ? {
                             ...data.card_data,
                             source_label: data.source_label || data.card_data.source_label || null,
                         }
                         : null;
-                    renderPanel(
-                        data.display_text ||
-                        `[Browse] model card 情報が空です。HTTP ${response.status}`
-                    );
+                    if (isCurrentSelection) {
+                        state.modelCardUrl = data.primary_url || data.civitai_url || "";
+                        state.modelCardData = modelCardData;
+                        state.loadedModelCardLoraName = state.modelCardData ? selectedLoraName : "";
+                        renderPanel(
+                            data.display_text ||
+                            `[Browse] model card 情報が空です。HTTP ${response.status}`
+                        );
+                    }
                 } catch (error) {
-                    state.modelCardUrl = "";
-                    state.modelCardData = null;
-                    renderPanel(`[Browse] model card 取得エラー: ${error}`);
+                    if (getSelectedLoraName() === selectedLoraName) {
+                        state.modelCardUrl = "";
+                        state.modelCardData = null;
+                        state.loadedModelCardLoraName = "";
+                        renderPanel(`[Browse] model card 取得エラー: ${error}`);
+                    }
                 }
 
                 if (openViewerAfterLoad && state.modelCardData) {
@@ -684,11 +825,15 @@ app.registerExtension({
             };
 
             const browseModelCard = async () => {
+                const selectedLoraName = syncSelectedLoraState({ resetPanel: false });
                 if (!ensureLoraSelected("[Browse]")) {
                     return;
                 }
 
-                if (state.modelCardData) {
+                if (
+                    state.modelCardData &&
+                    state.loadedModelCardLoraName === selectedLoraName
+                ) {
                     openViewer(state.modelCardData);
                     return;
                 }
@@ -702,11 +847,29 @@ app.registerExtension({
                 }
             };
 
+            this.__lltwtEnsureTriggerWordsLoaded = loadTriggerWords;
+
+            loraWidget.callback = function () {
+                const previousLoraName = state.currentLoraName;
+                const callbackResult = originalLoraWidgetCallback
+                    ? originalLoraWidgetCallback.apply(this, arguments)
+                    : undefined;
+                const selectedLoraName = getSelectedLoraName();
+
+                if (selectedLoraName !== previousLoraName) {
+                    state.currentLoraName = selectedLoraName;
+                    resetNodeStateForLoraChange();
+                    renderPanel(DEFAULT_PANEL_MESSAGE);
+                }
+
+                return callbackResult;
+            };
+
             this.addWidget(
                 "button",
                 "トリガーワード読込",
                 "",
-                loadTriggerWords,
+                () => loadTriggerWords({ force: true }),
                 { serialize: false }
             );
 
