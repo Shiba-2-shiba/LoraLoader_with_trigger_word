@@ -567,8 +567,10 @@ class TriggerWordAnalyzer:
         explicit_trained_words = self.has_explicit_trained_words(metadata)
         if self.STYLE_PLACEHOLDER in trained_words:
             return True
-        if trained_words and explicit_trained_words:
-            return False
+        if trained_words:
+            if explicit_trained_words:
+                return False
+            return self.inferred_trained_words_are_name_derived(metadata, lora_path)
 
         tags = set(self.extract_metadata_tags(metadata))
         if tags & self.TRIGGER_WORD_OPTIONAL_TAGS:
@@ -588,6 +590,16 @@ class TriggerWordAnalyzer:
                 "ss_tag_frequency がスタイル系 LoRA を示しているため、"
                 "明示トリガーワード不要モデルと判定しました。"
             )
+
+        if trained_words and self.inferred_trained_words_are_name_derived(metadata, lora_path):
+            optional_name_hints = self.extract_optional_name_hints(metadata, lora_path)
+            if optional_name_hints:
+                matched = ", ".join(sorted(optional_name_hints))
+                return (
+                    "埋め込み metadata 由来の候補がモデル名由来のみで、モデル名またはファイル名に "
+                    f"{matched} が含まれるため、明示トリガーワード不要モデルと判定しました。"
+                )
+            return "埋め込み metadata 由来の候補がモデル名またはファイル名由来のみのため、明示トリガーワード不要モデルと判定しました。"
 
         tags = set(self.extract_metadata_tags(metadata))
         if tags & self.TRIGGER_WORD_OPTIONAL_TAGS:
